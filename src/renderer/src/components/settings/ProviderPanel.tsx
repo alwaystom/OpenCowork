@@ -163,6 +163,95 @@ function toModelConfig(model: ManagedModelConfig): AIModelConfig {
   return nextModel
 }
 
+function normalizePositiveInteger(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.floor(value)
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value.trim())
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.floor(parsed)
+    }
+  }
+  return undefined
+}
+
+function readDiscoveredModelInteger(
+  model: Record<string, unknown>,
+  keys: string[]
+): number | undefined {
+  for (const key of keys) {
+    const normalized = normalizePositiveInteger(model[key])
+    if (normalized) return normalized
+  }
+  return undefined
+}
+
+function resolveBuiltinDiscoveredModelFallback(
+  builtinId: string | undefined,
+  modelId: string
+): AIModelConfig | undefined {
+  if (!builtinId) return undefined
+  const builtinPreset = builtinProviderPresets.find((preset) => preset.builtinId === builtinId)
+  if (!builtinPreset) return undefined
+  const modelKey = normalizeModelKey(modelId)
+  return builtinPreset.defaultModels.find((model) => normalizeModelKey(model.id) === modelKey)
+}
+
+function toDiscoveredModelConfig(
+  rawModel: Record<string, unknown>,
+  options: {
+    builtinId?: string
+    id?: string
+    name?: string
+  } = {}
+): AIModelConfig | null {
+  const idCandidate =
+    options.id ??
+    (typeof rawModel.id === 'string' && rawModel.id.trim()
+      ? rawModel.id.trim()
+      : typeof rawModel.slug === 'string' && rawModel.slug.trim()
+        ? rawModel.slug.trim()
+        : '')
+  if (!idCandidate) return null
+
+  const fallback = resolveBuiltinDiscoveredModelFallback(options.builtinId, idCandidate)
+  const resolvedName =
+    options.name?.trim() ||
+    (typeof rawModel.name === 'string' && rawModel.name.trim()) ||
+    fallback?.name ||
+    idCandidate
+  const contextLength =
+    readDiscoveredModelInteger(rawModel, [
+      'context_length',
+      'contextLength',
+      'max_context_length',
+      'maxContextLength',
+      'input_token_limit',
+      'inputTokenLimit',
+      'max_input_tokens',
+      'maxInputTokens'
+    ]) ?? fallback?.contextLength
+  const maxOutputTokens =
+    readDiscoveredModelInteger(rawModel, [
+      'max_output_tokens',
+      'maxOutputTokens',
+      'output_token_limit',
+      'outputTokenLimit',
+      'max_completion_tokens',
+      'maxCompletionTokens'
+    ]) ?? fallback?.maxOutputTokens
+
+  return {
+    ...(fallback ?? {}),
+    id: idCandidate,
+    name: resolvedName,
+    enabled: true,
+    ...(contextLength ? { contextLength } : {}),
+    ...(maxOutputTokens ? { maxOutputTokens } : {})
+  }
+}
+
 // --- Fetch models from provider API ---
 
 async function fetchModelsFromProvider(
@@ -186,13 +275,10 @@ async function fetchModelsFromProvider(
     if (result?.error) throw new Error(result.error)
     const data = JSON.parse(result.body)
     const models = data?.data?.models ?? data?.data ?? []
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return models.slice(0, 200).map((m: any) => ({
-      id: m.slug ?? m.id,
-      name: m.name ?? m.slug ?? m.id,
-      enabled: true,
-      contextLength: m.context_length
-    }))
+    return models
+      .slice(0, 200)
+      .map((model: Record<string, unknown>) => toDiscoveredModelConfig(model, { builtinId }))
+      .filter((model): model is AIModelConfig => Boolean(model))
   }
 
   // For OpenAI-compatible providers: GET /v1/models
@@ -223,12 +309,9 @@ async function fetchModelsFromProvider(
     }
     const data = JSON.parse(result.body)
     const models = data?.data ?? []
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return models.map((m: any) => ({
-      id: m.id,
-      name: m.id,
-      enabled: true
-    }))
+    return models
+      .map((model: Record<string, unknown>) => toDiscoveredModelConfig(model, { builtinId }))
+      .filter((model): model is AIModelConfig => Boolean(model))
   }
 
   if (type === 'anthropic' && builtinId) {

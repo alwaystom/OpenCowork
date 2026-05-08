@@ -196,6 +196,54 @@
   }
 }
 
+@keyframes ai-live-typewriter-node {
+  0% {
+    opacity: 0;
+  }
+  58% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ai-live-typewriter-delta-a {
+  0% {
+    opacity: 0;
+  }
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ai-live-typewriter-delta-b {
+  0% {
+    opacity: 0;
+  }
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ai-live-component-enter {
+  0% {
+    opacity: 0;
+  }
+  64% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
 @keyframes ai-live-thinking-agile {
   0%,
   100% {
@@ -223,51 +271,51 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
+  --background: #ffffff;
   --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
+  --card: #ffffff;
   --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
+  --popover: #ffffff;
   --popover-foreground: oklch(0.145 0 0);
   --primary: oklch(0.205 0 0);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.962 0.004 260);
+  --secondary: #f4f4f5;
   --secondary-foreground: oklch(0.235 0.01 260);
-  --muted: oklch(0.954 0.004 260);
+  --muted: #f5f5f6;
   --muted-foreground: oklch(0.44 0.014 260);
-  --accent: oklch(0.944 0.006 260);
+  --accent: #ececef;
   --accent-foreground: oklch(0.22 0.012 260);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.892 0.004 260);
-  --input: oklch(0.892 0.004 260);
+  --border: #dedee3;
+  --input: #dedee3;
   --ring: oklch(0.648 0.03 260);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.982 0.003 260);
+  --sidebar: #f1f2f4;
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.945 0.006 260);
+  --sidebar-accent: #e7e8ec;
   --sidebar-accent-foreground: oklch(0.22 0.012 260);
-  --sidebar-border: oklch(0.892 0.004 260);
+  --sidebar-border: #d9dbe2;
   --sidebar-ring: oklch(0.648 0.03 260);
-  --workspace-titlebar-bg: color-mix(in srgb, var(--background) 92%, white 8%);
-  --workspace-titlebar-border: color-mix(in srgb, var(--border) 76%, transparent);
-  --workspace-titlebar-button-hover: color-mix(in srgb, var(--accent) 78%, white 22%);
-  --workspace-titlebar-toolgroup-bg: color-mix(in srgb, var(--background) 88%, white 12%);
-  --workspace-titlebar-toolgroup-border: color-mix(in srgb, var(--border) 82%, transparent);
-  --workspace-titlebar-toolbutton-hover: color-mix(in srgb, var(--accent) 84%, white 16%);
-  --workspace-titlebar-toolbutton-active: color-mix(in srgb, var(--accent) 92%, white 8%);
-  --workspace-sidebar-divider: color-mix(in srgb, var(--sidebar-border) 72%, transparent);
-  --workspace-sidebar-section-border: color-mix(in srgb, var(--border) 62%, transparent);
-  --workspace-sidebar-row-hover-bg: color-mix(in srgb, var(--sidebar-accent) 92%, white 8%);
-  --workspace-sidebar-row-hover-border: color-mix(in srgb, var(--sidebar-border) 76%, transparent);
-  --workspace-sidebar-row-active-bg: color-mix(in srgb, var(--sidebar-accent) 98%, white 2%);
-  --workspace-sidebar-row-active-border: color-mix(in srgb, var(--sidebar-border) 84%, transparent);
+  --workspace-titlebar-bg: #ffffff;
+  --workspace-titlebar-border: #e6e6ea;
+  --workspace-titlebar-button-hover: #f0f0f2;
+  --workspace-titlebar-toolgroup-bg: #f7f7f8;
+  --workspace-titlebar-toolgroup-border: #dedee3;
+  --workspace-titlebar-toolbutton-hover: #ededf0;
+  --workspace-titlebar-toolbutton-active: #e4e5e9;
+  --workspace-sidebar-divider: #d9dbe2;
+  --workspace-sidebar-section-border: #e0e1e6;
+  --workspace-sidebar-row-hover-bg: #e8e9ed;
+  --workspace-sidebar-row-hover-border: #d8dae1;
+  --workspace-sidebar-row-active-bg: #dedfe5;
+  --workspace-sidebar-row-active-border: #cfd2da;
   --workspace-sidebar-row-active-shadow: 0 8px 20px -18px
     color-mix(in srgb, var(--foreground) 20%, transparent);
   --activity-card-bg: color-mix(in srgb, var(--card) 94%, black 6%);
@@ -279,7 +327,7 @@
   --workspace-filetree-card-bg: var(--card);
   --workspace-filetree-border: color-mix(in srgb, var(--border) 90%, transparent);
   --workspace-filetree-divider: color-mix(in srgb, var(--border) 84%, transparent);
-  --workspace-filetree-control-bg: color-mix(in srgb, var(--background) 94%, var(--muted) 6%);
+  --workspace-filetree-control-bg: #f7f7f8;
   --workspace-filetree-control-border: color-mix(in srgb, var(--border) 92%, transparent);
   --workspace-filetree-row-hover-bg: color-mix(in srgb, var(--accent) 84%, white 16%);
   --workspace-filetree-row-hover-border: color-mix(in srgb, var(--border) 86%, transparent);
@@ -308,15 +356,15 @@
   --workspace-sftp-panel-bg: var(--card);
   --workspace-sftp-border: color-mix(in srgb, var(--border) 90%, transparent);
   --workspace-sftp-divider: color-mix(in srgb, var(--border) 82%, transparent);
-  --workspace-sftp-control-bg: color-mix(in srgb, var(--background) 94%, var(--muted) 6%);
+  --workspace-sftp-control-bg: #f7f7f8;
   --workspace-sftp-control-hover-bg: color-mix(in srgb, var(--accent) 82%, white 18%);
   --workspace-sftp-row-hover-bg: color-mix(in srgb, var(--accent) 80%, white 20%);
   --workspace-sftp-row-selected-bg: color-mix(in srgb, var(--foreground) 7%, var(--accent));
   --workspace-sftp-table-header-bg: color-mix(in srgb, var(--muted) 72%, transparent);
   --workspace-sftp-shadow: 0 18px 34px -28px color-mix(in srgb, var(--foreground) 20%, transparent);
-  --composer-shell-top: var(--card);
-  --composer-shell-bottom: var(--card);
-  --composer-shell-border: color-mix(in srgb, var(--border) 92%, black 4%);
+  --composer-shell-top: #ffffff;
+  --composer-shell-bottom: #ffffff;
+  --composer-shell-border: #dedee3;
   --composer-shell-border-focus: color-mix(in srgb, var(--ring) 28%, var(--border));
   --composer-shell-shadow:
     0 10px 24px -18px color-mix(in srgb, var(--foreground) 18%, transparent),
@@ -328,14 +376,14 @@
   --composer-editor-surface: transparent;
   --composer-editor-surface-strong: transparent;
   --composer-editor-border: transparent;
-  --composer-toolbar-border: color-mix(in srgb, var(--border) 76%, transparent);
-  --composer-panel-bg: var(--popover);
-  --composer-panel-border: color-mix(in srgb, var(--border) 90%, black 4%);
+  --composer-toolbar-border: #ededf0;
+  --composer-panel-bg: #ffffff;
+  --composer-panel-border: #dedee3;
   --composer-panel-shadow:
     0 18px 36px -28px color-mix(in srgb, var(--foreground) 22%, transparent),
     0 1px 2px color-mix(in srgb, var(--foreground) 8%, transparent);
   --composer-control-bg: transparent;
-  --composer-control-bg-hover: color-mix(in srgb, var(--accent) 72%, white 28%);
+  --composer-control-bg-hover: #f0f0f2;
   --composer-control-border: transparent;
   --composer-control-shadow: none;
   --composer-control-active-bg: transparent;
@@ -348,10 +396,10 @@
     color-mix(in srgb, var(--foreground) 24%, transparent);
   --composer-send-foreground: var(--background);
   --composer-chip-bg: transparent;
-  --composer-chip-border: color-mix(in srgb, var(--border) 92%, transparent);
+  --composer-chip-border: #dedee3;
   --composer-chip-text: color-mix(in srgb, var(--foreground) 72%, var(--muted-foreground) 28%);
-  --composer-chip-hover: color-mix(in srgb, var(--accent) 74%, white 26%);
-  --composer-drop-bg: color-mix(in srgb, var(--accent) 70%, white 30%);
+  --composer-chip-hover: #f0f0f2;
+  --composer-drop-bg: #e8e9ed;
   --composer-placeholder: color-mix(in srgb, var(--muted-foreground) 82%, transparent);
   --composer-suggestion: color-mix(in srgb, var(--muted-foreground) 54%, transparent);
   --radius: 0.625rem;
@@ -363,98 +411,98 @@
 }
 
 .dark {
-  --background: oklch(0.17 0.008 260);
+  --background: #191919;
   --foreground: oklch(0.985 0.004 260);
-  --card: oklch(0.21 0.01 260);
+  --card: #242424;
   --card-foreground: oklch(0.985 0.004 260);
-  --popover: oklch(0.24 0.012 260);
+  --popover: #2b2b2b;
   --popover-foreground: oklch(0.985 0.004 260);
   --primary: oklch(0.72 0.12 255);
   --primary-foreground: oklch(0.18 0.01 260);
-  --secondary: oklch(0.24 0.01 260);
+  --secondary: #2b2b2b;
   --secondary-foreground: oklch(0.985 0.004 260);
-  --muted: oklch(0.22 0.01 260);
+  --muted: #222222;
   --muted-foreground: oklch(0.74 0.014 260);
-  --accent: oklch(0.27 0.014 260);
+  --accent: #303030;
   --accent-foreground: oklch(0.985 0.004 260);
   --destructive: oklch(0.396 0.141 25.723);
   --destructive-foreground: oklch(0.637 0.237 25.331);
-  --border: oklch(0.31 0.012 260);
-  --input: oklch(0.31 0.012 260);
+  --border: #3a3a3a;
+  --input: #3a3a3a;
   --ring: oklch(0.62 0.09 255);
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.19 0.01 260);
+  --sidebar: #151515;
   --sidebar-foreground: oklch(0.985 0.004 260);
   --sidebar-primary: oklch(0.72 0.12 255);
   --sidebar-primary-foreground: oklch(0.18 0.01 260);
-  --sidebar-accent: oklch(0.25 0.012 260);
+  --sidebar-accent: #252525;
   --sidebar-accent-foreground: oklch(0.985 0.004 260);
-  --sidebar-border: oklch(0.3 0.012 260);
+  --sidebar-border: #303030;
   --sidebar-ring: oklch(0.62 0.09 255);
-  --workspace-titlebar-bg: color-mix(in srgb, var(--background) 84%, black 16%);
-  --workspace-titlebar-border: color-mix(in srgb, var(--border) 70%, black 30%);
-  --workspace-titlebar-button-hover: color-mix(in srgb, var(--accent) 70%, black 30%);
-  --workspace-titlebar-toolgroup-bg: color-mix(in srgb, var(--background) 74%, black 26%);
-  --workspace-titlebar-toolgroup-border: color-mix(in srgb, var(--border) 74%, black 26%);
-  --workspace-titlebar-toolbutton-hover: color-mix(in srgb, var(--accent) 72%, black 28%);
-  --workspace-titlebar-toolbutton-active: color-mix(in srgb, var(--accent) 88%, black 12%);
-  --workspace-sidebar-divider: color-mix(in srgb, var(--sidebar-border) 72%, black 28%);
-  --workspace-sidebar-section-border: color-mix(in srgb, var(--border) 64%, black 36%);
-  --workspace-sidebar-row-hover-bg: color-mix(in srgb, var(--sidebar-accent) 82%, black 18%);
-  --workspace-sidebar-row-hover-border: color-mix(in srgb, var(--sidebar-border) 74%, black 26%);
-  --workspace-sidebar-row-active-bg: color-mix(in srgb, var(--sidebar-accent) 94%, black 6%);
-  --workspace-sidebar-row-active-border: color-mix(in srgb, var(--sidebar-border) 82%, black 18%);
+  --workspace-titlebar-bg: color-mix(in srgb, var(--sidebar) 88%, var(--background) 12%);
+  --workspace-titlebar-border: color-mix(in srgb, var(--border) 76%, black 24%);
+  --workspace-titlebar-button-hover: color-mix(in srgb, var(--accent) 82%, black 18%);
+  --workspace-titlebar-toolgroup-bg: color-mix(in srgb, var(--card) 72%, var(--sidebar) 28%);
+  --workspace-titlebar-toolgroup-border: color-mix(in srgb, var(--border) 80%, black 20%);
+  --workspace-titlebar-toolbutton-hover: color-mix(in srgb, var(--accent) 78%, black 22%);
+  --workspace-titlebar-toolbutton-active: color-mix(in srgb, var(--accent) 94%, white 6%);
+  --workspace-sidebar-divider: color-mix(in srgb, var(--sidebar-border) 76%, black 24%);
+  --workspace-sidebar-section-border: color-mix(in srgb, var(--border) 70%, black 30%);
+  --workspace-sidebar-row-hover-bg: color-mix(in srgb, var(--sidebar-accent) 92%, black 8%);
+  --workspace-sidebar-row-hover-border: color-mix(in srgb, var(--sidebar-border) 82%, black 18%);
+  --workspace-sidebar-row-active-bg: color-mix(in srgb, var(--sidebar-accent) 94%, white 6%);
+  --workspace-sidebar-row-active-border: color-mix(in srgb, var(--sidebar-border) 86%, white 14%);
   --workspace-sidebar-row-active-shadow: 0 12px 24px -20px rgba(0, 0, 0, 0.45);
-  --activity-card-bg: color-mix(in srgb, var(--card) 88%, black 12%);
-  --activity-card-border: color-mix(in srgb, var(--border) 74%, black 26%);
-  --activity-card-divider: color-mix(in srgb, var(--border) 68%, black 32%);
-  --activity-card-header-hover: color-mix(in srgb, var(--accent) 62%, black 38%);
+  --activity-card-bg: color-mix(in srgb, var(--card) 92%, var(--popover) 8%);
+  --activity-card-border: color-mix(in srgb, var(--border) 80%, black 20%);
+  --activity-card-divider: color-mix(in srgb, var(--border) 74%, black 26%);
+  --activity-card-header-hover: color-mix(in srgb, var(--accent) 76%, black 24%);
   --activity-card-shadow: 0 18px 32px -24px rgba(0, 0, 0, 0.48);
   --workspace-filetree-bg: var(--background);
   --workspace-filetree-card-bg: var(--card);
-  --workspace-filetree-border: color-mix(in srgb, var(--border) 78%, black 22%);
-  --workspace-filetree-divider: color-mix(in srgb, var(--border) 70%, black 30%);
-  --workspace-filetree-control-bg: color-mix(in srgb, var(--background) 82%, var(--muted) 18%);
-  --workspace-filetree-control-border: color-mix(in srgb, var(--border) 82%, black 18%);
-  --workspace-filetree-row-hover-bg: color-mix(in srgb, var(--accent) 72%, black 28%);
-  --workspace-filetree-row-hover-border: color-mix(in srgb, var(--border) 78%, black 22%);
-  --workspace-filetree-row-expanded-bg: color-mix(in srgb, var(--accent) 82%, black 18%);
-  --workspace-filetree-row-expanded-border: color-mix(in srgb, var(--border) 84%, black 16%);
+  --workspace-filetree-border: color-mix(in srgb, var(--border) 82%, black 18%);
+  --workspace-filetree-divider: color-mix(in srgb, var(--border) 74%, black 26%);
+  --workspace-filetree-control-bg: color-mix(in srgb, var(--card) 68%, var(--background) 32%);
+  --workspace-filetree-control-border: color-mix(in srgb, var(--border) 84%, black 16%);
+  --workspace-filetree-row-hover-bg: color-mix(in srgb, var(--accent) 82%, black 18%);
+  --workspace-filetree-row-hover-border: color-mix(in srgb, var(--border) 82%, black 18%);
+  --workspace-filetree-row-expanded-bg: color-mix(in srgb, var(--accent) 88%, black 12%);
+  --workspace-filetree-row-expanded-border: color-mix(in srgb, var(--border) 88%, black 12%);
   --workspace-filetree-row-active-bg: color-mix(in srgb, var(--foreground) 8%, var(--accent));
   --workspace-filetree-row-active-border: color-mix(in srgb, var(--foreground) 16%, var(--border));
   --workspace-filetree-row-active-shadow: 0 12px 22px -20px rgba(0, 0, 0, 0.42);
-  --workspace-filetree-chip-bg: color-mix(in srgb, var(--background) 74%, var(--muted) 26%);
-  --workspace-filetree-chip-border: color-mix(in srgb, var(--border) 78%, black 22%);
+  --workspace-filetree-chip-bg: color-mix(in srgb, var(--card) 62%, var(--background) 38%);
+  --workspace-filetree-chip-border: color-mix(in srgb, var(--border) 82%, black 18%);
   --workspace-filetree-chip-text: color-mix(
     in srgb,
     var(--foreground) 76%,
     var(--muted-foreground) 24%
   );
-  --workspace-filetree-empty-bg: color-mix(in srgb, var(--muted) 32%, transparent);
-  --workspace-filetree-guide: color-mix(in srgb, var(--border) 64%, black 36%);
+  --workspace-filetree-empty-bg: color-mix(in srgb, var(--muted) 42%, transparent);
+  --workspace-filetree-guide: color-mix(in srgb, var(--border) 68%, black 32%);
   --workspace-terminal-bg: var(--background);
-  --workspace-terminal-border: color-mix(in srgb, var(--border) 78%, black 22%);
-  --workspace-terminal-divider: color-mix(in srgb, var(--border) 68%, black 32%);
-  --workspace-terminal-tab-hover-bg: color-mix(in srgb, var(--accent) 72%, black 28%);
+  --workspace-terminal-border: color-mix(in srgb, var(--border) 82%, black 18%);
+  --workspace-terminal-divider: color-mix(in srgb, var(--border) 74%, black 26%);
+  --workspace-terminal-tab-hover-bg: color-mix(in srgb, var(--accent) 82%, black 18%);
   --workspace-terminal-tab-active-bg: color-mix(in srgb, var(--foreground) 8%, var(--accent));
   --workspace-terminal-tab-active-border: color-mix(in srgb, var(--foreground) 15%, var(--border));
   --workspace-sftp-surface-bg: var(--background);
   --workspace-sftp-panel-bg: var(--card);
-  --workspace-sftp-border: color-mix(in srgb, var(--border) 78%, black 22%);
-  --workspace-sftp-divider: color-mix(in srgb, var(--border) 68%, black 32%);
-  --workspace-sftp-control-bg: color-mix(in srgb, var(--background) 82%, var(--muted) 18%);
-  --workspace-sftp-control-hover-bg: color-mix(in srgb, var(--accent) 72%, black 28%);
-  --workspace-sftp-row-hover-bg: color-mix(in srgb, var(--accent) 70%, black 30%);
+  --workspace-sftp-border: color-mix(in srgb, var(--border) 82%, black 18%);
+  --workspace-sftp-divider: color-mix(in srgb, var(--border) 74%, black 26%);
+  --workspace-sftp-control-bg: color-mix(in srgb, var(--card) 68%, var(--background) 32%);
+  --workspace-sftp-control-hover-bg: color-mix(in srgb, var(--accent) 82%, black 18%);
+  --workspace-sftp-row-hover-bg: color-mix(in srgb, var(--accent) 80%, black 20%);
   --workspace-sftp-row-selected-bg: color-mix(in srgb, var(--foreground) 8%, var(--accent));
-  --workspace-sftp-table-header-bg: color-mix(in srgb, var(--muted) 58%, transparent);
+  --workspace-sftp-table-header-bg: color-mix(in srgb, var(--muted) 70%, transparent);
   --workspace-sftp-shadow: 0 18px 32px -26px rgba(0, 0, 0, 0.46);
-  --composer-shell-top: color-mix(in srgb, var(--card) 92%, var(--background) 8%);
-  --composer-shell-bottom: color-mix(in srgb, var(--card) 92%, var(--background) 8%);
-  --composer-shell-border: color-mix(in srgb, var(--border) 82%, black 18%);
+  --composer-shell-top: #303030;
+  --composer-shell-bottom: #303030;
+  --composer-shell-border: color-mix(in srgb, var(--border) 74%, transparent);
   --composer-shell-border-focus: color-mix(in srgb, var(--ring) 24%, var(--border));
   --composer-shell-shadow: 0 18px 32px -24px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(0, 0, 0, 0.35);
   --composer-shell-shadow-focus:
@@ -463,12 +511,12 @@
   --composer-editor-surface: transparent;
   --composer-editor-surface-strong: transparent;
   --composer-editor-border: transparent;
-  --composer-toolbar-border: color-mix(in srgb, var(--border) 68%, black 32%);
-  --composer-panel-bg: color-mix(in srgb, var(--popover) 96%, black 4%);
-  --composer-panel-border: color-mix(in srgb, var(--border) 78%, black 22%);
+  --composer-toolbar-border: color-mix(in srgb, var(--border) 74%, black 26%);
+  --composer-panel-bg: #303030;
+  --composer-panel-border: color-mix(in srgb, var(--border) 82%, black 18%);
   --composer-panel-shadow: 0 20px 38px -28px rgba(0, 0, 0, 0.72), 0 1px 2px rgba(0, 0, 0, 0.4);
   --composer-control-bg: transparent;
-  --composer-control-bg-hover: color-mix(in srgb, var(--accent) 72%, black 28%);
+  --composer-control-bg-hover: color-mix(in srgb, var(--accent) 82%, black 18%);
   --composer-control-border: transparent;
   --composer-control-shadow: none;
   --composer-control-active-bg: transparent;
@@ -480,12 +528,13 @@
   --composer-send-shadow-hover: 0 12px 24px -14px rgba(0, 0, 0, 0.52);
   --composer-send-foreground: var(--background);
   --composer-chip-bg: transparent;
-  --composer-chip-border: color-mix(in srgb, var(--border) 78%, black 22%);
+  --composer-chip-border: color-mix(in srgb, var(--border) 82%, black 18%);
   --composer-chip-text: color-mix(in srgb, var(--foreground) 78%, var(--muted-foreground) 22%);
-  --composer-chip-hover: color-mix(in srgb, var(--accent) 70%, black 30%);
-  --composer-drop-bg: color-mix(in srgb, var(--accent) 68%, black 32%);
+  --composer-chip-hover: color-mix(in srgb, var(--accent) 82%, black 18%);
+  --composer-drop-bg: color-mix(in srgb, var(--accent) 78%, black 22%);
   --composer-placeholder: color-mix(in srgb, var(--muted-foreground) 72%, transparent);
   --composer-suggestion: color-mix(in srgb, var(--muted-foreground) 46%, transparent);
+  --app-background: var(--background);
 }
 
 @layer base {
@@ -634,15 +683,149 @@
     padding: 0;
     background: transparent;
     box-shadow: none;
-    will-change: color, text-shadow, filter;
+    --typewriter-fade-duration: 70ms;
+    --typewriter-fade-ease: ease-out;
+    --stream-update-fade-duration: 62ms;
+    --stream-update-fade-ease: ease-out;
+    --stream-update-steps: 3;
+    --opencowork-md-table-border: color-mix(in srgb, var(--border) 60%, transparent);
+    --opencowork-md-table-row-border: color-mix(in srgb, var(--border) 40%, transparent);
+    --opencowork-md-table-cell-border: color-mix(in srgb, var(--border) 30%, transparent);
+    --opencowork-md-table-header-bg: color-mix(in srgb, var(--muted) 60%, transparent);
+    --opencowork-md-table-row-hover-bg: color-mix(in srgb, var(--muted) 30%, transparent);
+    --opencowork-md-table-header-fg: color-mix(in srgb, var(--foreground) 90%, transparent);
+    --opencowork-md-table-cell-fg: color-mix(in srgb, var(--foreground) 80%, transparent);
+    will-change: auto;
   }
 
   .ai-live-stream--agile {
-    animation: ai-live-stream-agile 1.25s ease-in-out infinite;
+    animation: none;
+    --typewriter-fade-duration: 58ms;
+    --stream-update-fade-duration: 52ms;
+    --stream-update-steps: 3;
   }
 
   .ai-live-stream--elegant {
-    animation: ai-live-stream-elegant 3s ease-in-out infinite;
+    animation: none;
+    --typewriter-fade-duration: 90ms;
+    --stream-update-fade-duration: 82ms;
+    --stream-update-steps: 4;
+  }
+
+  .opencowork-markstream .typewriter-node {
+    animation-name: ai-live-typewriter-node;
+    animation-duration: var(--typewriter-fade-duration, 70ms);
+    animation-timing-function: var(--typewriter-fade-ease, ease-out);
+    will-change: opacity;
+  }
+
+  .opencowork-markstream .markdown-renderer,
+  .opencowork-markstream .markdown-renderer.virtualized {
+    content-visibility: visible;
+    contain: none;
+    contain-intrinsic-size: auto;
+  }
+
+  .opencowork-markstream .node-placeholder {
+    display: none;
+  }
+
+  .opencowork-markstream .table-node-wrapper {
+    margin-top: 0.75rem !important;
+    margin-bottom: 0.75rem !important;
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--opencowork-md-table-border) !important;
+    border-radius: 0.5rem;
+  }
+
+  .opencowork-markstream .table-node {
+    margin: 0 !important;
+    width: 100%;
+    min-width: 0;
+    border-collapse: collapse;
+    table-layout: auto;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+  }
+
+  .opencowork-markstream .table-node thead {
+    border-color: transparent !important;
+    background: var(--opencowork-md-table-header-bg);
+  }
+
+  .opencowork-markstream .table-node tr {
+    border-color: var(--opencowork-md-table-row-border) !important;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-duration: 150ms;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .opencowork-markstream .table-node tr:hover {
+    background: var(--opencowork-md-table-row-hover-bg);
+  }
+
+  .opencowork-markstream .table-node thead tr {
+    border-bottom: 0 !important;
+  }
+
+  .opencowork-markstream .table-node tbody tr:not(:last-child) {
+    border-bottom: 1px solid var(--opencowork-md-table-row-border) !important;
+  }
+
+  .opencowork-markstream .table-node th,
+  .opencowork-markstream .table-node td {
+    padding: 0.5rem 0.75rem !important;
+    text-align: left !important;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+
+  .opencowork-markstream .table-node th {
+    border-bottom: 1px solid var(--opencowork-md-table-border) !important;
+    color: var(--opencowork-md-table-header-fg);
+    font-weight: 600;
+  }
+
+  .opencowork-markstream .table-node td {
+    border-right: 1px solid var(--opencowork-md-table-cell-border) !important;
+    color: var(--opencowork-md-table-cell-fg);
+  }
+
+  .opencowork-markstream .table-node td:last-child {
+    border-right: 0 !important;
+  }
+
+  .opencowork-markstream .text-node-stream-delta {
+    display: inline;
+    animation-duration: var(--stream-update-fade-duration, 62ms);
+    animation-timing-function: var(--stream-update-fade-ease, ease-out);
+    animation-fill-mode: both;
+    will-change: opacity;
+  }
+
+  .opencowork-markstream .text-node-stream-delta--a {
+    animation-name: ai-live-typewriter-delta-a;
+  }
+
+  .opencowork-markstream .text-node-stream-delta--b {
+    animation-name: ai-live-typewriter-delta-b;
+  }
+
+  .ai-live-component {
+    --ai-live-component-duration: 96ms;
+    --ai-live-component-ease: ease-out;
+    animation: ai-live-component-enter var(--ai-live-component-duration)
+      var(--ai-live-component-ease) both;
+    will-change: opacity;
+  }
+
+  .ai-live-component--agile {
+    --ai-live-component-duration: 82ms;
+  }
+
+  .ai-live-component--elegant {
+    --ai-live-component-duration: 120ms;
   }
 
   .ai-live-thinking {

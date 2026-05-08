@@ -23,7 +23,7 @@
 
 ## Coding Style & Naming Conventions
 
-Use UTF-8, LF line endings, 2-space indentation, single quotes, no semicolons, and a 100-character line width. TypeScript runs in strict mode. Use PascalCase for React components such as `Layout.tsx`, and kebab-case for non-component modules such as `settings-store.ts`. Renderer imports may use the `@renderer/*` alias.
+Use UTF-8, LF line endings, 2-space indentation, single quotes, no semicolons, and a 100-character line width. TypeScript runs in strict mode. Use PascalCase for React components such as `Layout.tsx`, and kebab-case for non-component modules such as `settings-store.ts`. Renderer imports may use the `@renderer/*` alias. Keep comments sparse and high-signal: explain intent, invariants, process or security boundaries, and non-obvious async or state behavior; avoid comments that simply narrate the code. Add JSDoc only when an exported API's parameters, side effects, or contract are not obvious from the signature.
 
 ## Testing Guidelines
 

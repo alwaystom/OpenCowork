@@ -314,7 +314,7 @@
   },
   "plugin": {
     "title": "Plugins",
-    "subtitle": "Configure optional Tool plugins. All plugins are disabled by default",
+    "subtitle": "Configure optional Tool plugins and their access rules",
     "enable": "Enable plugin",
     "enableDesc": "The Agent only gets the related Tool after the plugin is enabled and configured",
     "enabled": "Enabled",
@@ -331,10 +331,18 @@
     "selectModel": "Select image model",
     "toolStatus": "Tool status",
     "toolStatusDesc": "The image Tool is only exposed when the plugin is enabled and the model is valid.",
+    "toolStatusDescBrowser": "Browser tools are only exposed when the browser plugin is enabled. Domain rules apply to manual browsing and Agent navigation.",
     "toolStatusDescDesktop": "Desktop-control tools are only exposed when the plugin is enabled. Every call still requires approval. If the active model also enables Computer Use, OpenAI Computer Use will proxy these capabilities first.",
     "toolArgs": "Available args: prompt, count",
     "toolArgsMap": {
       "ImageGenerate": "Available args: prompt, count",
+      "BrowserNavigate": "Available args: url, action",
+      "BrowserGetContent": "Available args: selector, type",
+      "BrowserScreenshot": "Available args: none",
+      "BrowserSnapshot": "Available args: none",
+      "BrowserClick": "Available args: selector",
+      "BrowserType": "Available args: selector, text, clear, submit",
+      "BrowserScroll": "Available args: direction, amount",
       "DesktopScreenshot": "Available args: none",
       "DesktopClick": "Available args: x, y, button, action",
       "DesktopType": "Available args: text, key, hotkey",
@@ -346,12 +354,32 @@
       "not_ready": "The plugin is enabled, but required configuration is still missing.",
       "ready": "The plugin is ready and its tools are available to the Agent."
     },
+    "browser": {
+      "title": "Browser privacy and access",
+      "desc": "Clear browser cookies and configure which domains the built-in browser can visit.",
+      "clearCookies": "Clear cookies",
+      "clearingCookies": "Clearing...",
+      "cookiesCleared": "Browser cookies cleared",
+      "cookiesClearFailed": "Failed to clear browser cookies",
+      "blockedDomains": "Blocked domains",
+      "blockedDomainsDesc": "Navigation to these domains and subdomains is denied.",
+      "allowedDomains": "Allowed domains",
+      "allowedDomainsDesc": "Leave empty to allow all domains. When set, only matching domains can be opened.",
+      "domainPlaceholder": "example.com\nsub.example.org",
+      "domainRuleHint": "Enter one domain per line or separate with commas. Blocked domains take priority over allowed domains; subdomains match automatically."
+    },
     "items": {
       "image": {
         "title": "Image Plugin",
         "description": "Expose a dedicated image-generation Tool to the Agent.",
         "promptTitle": "Tool usage constraints",
         "promptDesc": "Enable this only when you want the Agent to directly generate images. The Tool accepts only `prompt` and `count`, and uses the configured image model."
+      },
+      "browser": {
+        "title": "Browser Plugin",
+        "description": "Expose the built-in browser panel and browser automation tools to the Agent.",
+        "promptTitle": "Tool usage constraints",
+        "promptDesc": "The Agent can navigate pages, extract content, take screenshots, inspect elements, click, type, and scroll. Domain allow/block rules are enforced before navigation."
       },
       "desktop-control": {
         "title": "Desktop Control Plugin",

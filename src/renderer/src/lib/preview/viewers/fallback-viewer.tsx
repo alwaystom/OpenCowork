@@ -13,7 +13,11 @@ export function FallbackViewer({
   filePath,
   content,
   onContentChange,
-  sshConnectionId
+  onSave,
+  sshConnectionId,
+  initialLine,
+  initialColumn,
+  initialPositionKey
 }: ViewerProps): React.JSX.Element {
   const openFilePreview = useUIStore((state) => state.openFilePreview)
   const workingFolder = useChatStore((state) => {
@@ -40,7 +44,11 @@ export function FallbackViewer({
       filePath={filePath}
       content={content}
       onChange={onContentChange}
+      onSave={onSave}
       onOpenFile={handleOpenFile}
+      initialLine={initialLine}
+      initialColumn={initialColumn}
+      initialPositionKey={initialPositionKey}
       workspace={workspace}
     />
   )

@@ -1054,13 +1054,10 @@ export function WorkspaceSidebar(): React.JSX.Element {
       >
         <div
           className={cn(
-            'workspace-sidebar-titlebar titlebar-drag flex h-10 shrink-0 items-center gap-2 px-3',
+            'workspace-sidebar-titlebar titlebar-drag flex h-10 shrink-0 items-center gap-2 px-2',
             isMac ? 'pl-[78px]' : ''
           )}
         >
-          <div className="min-w-0 flex-1 truncate text-sm font-semibold text-sidebar-foreground/90">
-            OpenCowork
-          </div>
           <Button
             variant="ghost"
             size="icon"
@@ -1070,6 +1067,9 @@ export function WorkspaceSidebar(): React.JSX.Element {
           >
             <PanelLeftClose className="size-4" />
           </Button>
+          <div className="min-w-0 flex-1 truncate text-sm font-semibold text-sidebar-foreground/90">
+            OpenCowork
+          </div>
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col">

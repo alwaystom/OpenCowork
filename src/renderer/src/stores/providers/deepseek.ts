@@ -3,8 +3,8 @@ import type { BuiltinProviderPreset } from './types'
 export const deepseekPreset: BuiltinProviderPreset = {
   builtinId: 'deepseek',
   name: 'DeepSeek',
-  type: 'openai-chat',
-  defaultBaseUrl: 'https://api.deepseek.com/v1',
+  type: 'anthropic',
+  defaultBaseUrl: 'https://api.deepseek.com/anthropic',
   homepage: 'https://platform.deepseek.com',
   apiKeyUrl: 'https://platform.deepseek.com/api_keys',
   defaultModel: 'deepseek-v4-flash',

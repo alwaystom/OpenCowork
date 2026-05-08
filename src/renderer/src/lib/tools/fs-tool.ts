@@ -25,6 +25,23 @@ function detectEolStyle(value: string): EolStyle {
   return null
 }
 
+function detectDominantEolStyle(value: string): EolStyle {
+  let crlf = 0
+  let lf = 0
+
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === '\r' && value[index + 1] === '\n') {
+      crlf += 1
+      index += 1
+    } else if (value[index] === '\n') {
+      lf += 1
+    }
+  }
+
+  if (crlf === 0 && lf === 0) return null
+  return crlf >= lf ? '\r\n' : '\n'
+}
+
 function normalizeToLf(value: string): string {
   return value.replace(/\r\n/g, '\n')
 }
@@ -39,19 +56,32 @@ function buildOldStringVariants(
   oldStr: string,
   fileContent: string
 ): Array<{ text: string; eol: EolStyle }> {
-  const variants: Array<{ text: string; eol: EolStyle }> = [
-    { text: oldStr, eol: detectEolStyle(oldStr) }
-  ]
-  const fileHasCrlf = fileContent.includes('\r\n')
-  const fileHasOnlyLf = !fileHasCrlf
+  const variants: Array<{ text: string; eol: EolStyle }> = []
+  const seen = new Set<string>()
+  const addVariant = (text: string, eol: EolStyle): void => {
+    if (seen.has(text)) return
+    seen.add(text)
+    variants.push({ text, eol })
+  }
 
-  if (oldStr.includes('\n') && !oldStr.includes('\r') && fileHasCrlf) {
-    variants.push({ text: oldStr.replace(/\n/g, '\r\n'), eol: '\r\n' })
-  } else if (oldStr.includes('\r\n') && fileHasOnlyLf) {
-    variants.push({ text: oldStr.replace(/\r\n/g, '\n'), eol: '\n' })
+  addVariant(oldStr, detectEolStyle(oldStr))
+
+  if (oldStr.includes('\n')) {
+    const lfText = normalizeToLf(oldStr)
+    addVariant(lfText, '\n')
+    if (fileContent.includes('\r\n')) {
+      addVariant(lfText.replace(/\n/g, '\r\n'), '\r\n')
+    }
   }
 
   return variants
+}
+
+function getReplacementEolStyle(
+  matchedOldString: { eol: EolStyle },
+  fileContent: string
+): EolStyle {
+  return matchedOldString.eol ?? detectDominantEolStyle(fileContent)
 }
 
 function normalizeReadHistoryPath(filePath: string): string {
@@ -454,7 +484,7 @@ const editHandler: ToolHandler = {
       )
     }
 
-    const replacementText = applyEolStyle(newStr, matchedVariant.eol)
+    const replacementText = applyEolStyle(newStr, getReplacementEolStyle(matchedVariant, content))
     const updated = replaceAll
       ? content.split(matchedVariant.text).join(replacementText)
       : content.replace(matchedVariant.text, replacementText)

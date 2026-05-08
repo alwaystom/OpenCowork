@@ -25,6 +25,7 @@ Build, Test, and Development Commands
 Coding Style & Naming Conventions
 
 - Specify indentation rules, language-specific style preferences, and naming patterns.
+- Document code comment expectations. Prefer brief, high-signal comments that explain intent, invariants, boundaries, or non-obvious behavior; avoid comments that merely restate the code.
 - Include any formatting or linting tools used.
 
 Testing Guidelines

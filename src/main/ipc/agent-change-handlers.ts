@@ -20,6 +20,12 @@ interface ChangeMeta {
   toolName?: string
 }
 
+interface ListRunChangesArgs {
+  runId: string
+  sessionId?: string
+  toolUseIds?: string[]
+}
+
 export interface FileSnapshot {
   exists: boolean
   text?: string
@@ -360,6 +366,53 @@ function getRunChangeSet(runId: string): RunChangeSet | null {
   return cloneRunChangeSet(changeSet)
 }
 
+function getRunChangeSetByQuery(args: ListRunChangesArgs): RunChangeSet | null {
+  const runId = args.runId?.trim()
+  if (runId) {
+    const exact = getRunChangeSet(runId)
+    if (exact) return exact
+  }
+
+  pruneStaleRunChanges()
+
+  const sessionId = args.sessionId?.trim()
+  const toolUseIds = new Set(
+    (args.toolUseIds ?? []).filter((value): value is string => typeof value === 'string' && value)
+  )
+  if (toolUseIds.size === 0 && !runId) return null
+
+  let bestMatch: { changeSet: RunChangeSet; score: number } | null = null
+
+  for (const changeSet of runChanges.values()) {
+    if (sessionId && changeSet.sessionId !== sessionId) continue
+
+    const assistantMessageMatch = runId && changeSet.assistantMessageId === runId
+    let toolMatchCount = 0
+    if (toolUseIds.size > 0) {
+      for (const change of changeSet.changes) {
+        if (change.toolUseId && toolUseIds.has(change.toolUseId)) {
+          toolMatchCount += 1
+        }
+      }
+    }
+
+    if (!assistantMessageMatch && toolMatchCount === 0) continue
+
+    const score = (assistantMessageMatch ? 1000 : 0) + toolMatchCount
+    if (
+      !bestMatch ||
+      score > bestMatch.score ||
+      (score === bestMatch.score && changeSet.updatedAt > bestMatch.changeSet.updatedAt)
+    ) {
+      bestMatch = { changeSet, score }
+    }
+  }
+
+  if (!bestMatch) return null
+  touchRunChangeSet(bestMatch.changeSet)
+  return cloneRunChangeSet(bestMatch.changeSet)
+}
+
 function findChange(
   runId: string,
   changeId: string
@@ -646,10 +699,10 @@ async function rollbackFileChange(
 }
 
 export function registerAgentChangeHandlers(): void {
-  ipcMain.handle('agent:changes:list', async (_event, args: { runId: string }) => {
+  ipcMain.handle('agent:changes:list', async (_event, args: ListRunChangesArgs) => {
     try {
       if (!args?.runId) return null
-      return getRunChangeSet(args.runId)
+      return getRunChangeSetByQuery(args)
     } catch (err) {
       return { error: String(err) }
     }

@@ -94,9 +94,12 @@ import {
 } from '@renderer/lib/agent/context-compression'
 import { runAgentLoop } from '@renderer/lib/agent/agent-loop'
 import {
+  liveToolInputSignature,
+  type LiveLineCountCache,
   summarizeToolInputForHistory,
   summarizeToolInputForLiveCard
 } from '@renderer/lib/tools/tool-input-sanitizer'
+import { recordStreamingToolArgsDuration } from '@renderer/lib/streaming-perf'
 import {
   addRuntimeMessage,
   appendRuntimeContentBlock,
@@ -169,7 +172,6 @@ import type { AgentStreamEvent } from '../../../shared/agent-stream-protocol'
 /** Per-session abort controllers — module-level so concurrent sessions don't overwrite each other */
 const sessionAbortControllers = new Map<string, AbortController>()
 const sessionSidecarRunIds = new Map<string, string>()
-const longRunningVerificationPasses = new Map<string, number>()
 // Register IPC listeners once at module level — not inside useEffect —
 // to avoid accumulating duplicate listeners when multiple components call useChatActions.
 attachRendererToolBridge()
@@ -189,7 +191,6 @@ useChatStore.subscribe((state) => {
         pendingSessionMessages.delete(id)
         pendingSessionMessageViews.delete(id)
         pausedPendingSessionDispatch.delete(id)
-        longRunningVerificationPasses.delete(id)
       }
     }
   }
@@ -612,9 +613,6 @@ function shouldAutoContinueLongRunningRun(options: {
     return false
   const activeStatus = useAgentStore.getState().runningSessions[sessionId]
   if (activeStatus === 'running' || activeStatus === 'retrying') return false
-
-  const session = useChatStore.getState().sessions.find((item) => item.id === sessionId)
-  if (!session?.longRunningMode) return false
 
   const messages = useChatStore.getState().getSessionMessages(sessionId)
   const assistantMessage = messages.find((message) => message.id === assistantMessageId)
@@ -1960,6 +1958,7 @@ export function abortSession(sessionId: string): void {
 const STREAM_DELTA_FLUSH_MS = 16
 const BACKGROUND_STREAM_DELTA_FLUSH_MS = 200
 const TOOL_INPUT_FLUSH_MS = 300
+const AGENT_TOOL_INPUT_FLUSH_MS = 60
 const BACKGROUND_TOOL_INPUT_FLUSH_MS = 600
 // SubAgent text can arrive from multiple inner loops at high frequency.
 // Buffering it separately avoids waking large parts of the UI on every tiny delta.
@@ -1971,6 +1970,19 @@ interface StreamDeltaBuffer {
   setToolInput: (toolUseId: string, input: Record<string, unknown>) => void
   flushNow: () => void
   dispose: () => void
+}
+
+interface LiveToolInputThrottleEntry {
+  lastChatFlush: number
+  lastAgentFlush: number
+  pendingRaw?: Record<string, unknown>
+  pendingSummary?: Record<string, unknown>
+  pendingSignature?: string
+  chatTimer?: ReturnType<typeof setTimeout>
+  agentTimer?: ReturnType<typeof setTimeout>
+  lastChatSent?: string
+  lastAgentSent?: string
+  lineCountCache: LiveLineCountCache
 }
 
 function createStreamDeltaBuffer(
@@ -2553,7 +2565,6 @@ export function useChatActions(): {
         })
       }
       if (source !== 'continue') {
-        longRunningVerificationPasses.delete(sessionId)
         // Reset the back-to-back Task dedup guard on every fresh user turn —
         // the guard is only meant to block immediate retries within one loop,
         // not carry over into new user messages.
@@ -3160,18 +3171,6 @@ export function useChatActions(): {
               : desktopPluginSection
           }
 
-          if (session?.longRunningMode) {
-            const longRunningSection = [
-              '\n## Long-Running Mode',
-              '- Stay autonomous until the user request is actually finished. Do not stop just because you made partial progress.',
-              '- Treat AskUserQuestion as self-decision: if a choice is needed, decide yourself from context. Prefer recommended options, otherwise choose the safest sensible default and continue.',
-              '- Do not claim completion until all real tasks are done: no pending/in-progress tasks, no unfinished tool work, and no meaningful next action remains.',
-              '- If you complete work after using tools or updating tasks, perform one more verification turn before ending and explicitly state that all tasks are complete.',
-              '- If context becomes crowded, preserve a concise handoff summary and continue from that summary rather than ending early.'
-            ].join('\n')
-            userPrompt = userPrompt ? `${userPrompt}\n${longRunningSection}` : longRunningSection
-          }
-
           // Channel session context: inject reply instructions when this session belongs to a channel
           if (session?.pluginId && session?.externalChatId) {
             const channelMeta = useChannelStore
@@ -3366,41 +3365,20 @@ export function useChatActions(): {
 
           let streamDeltaBuffer: StreamDeltaBuffer | null = null
           const preRunTaskSnapshot = getTaskProgressSnapshot(sessionId)
-          const verificationPassIndex = longRunningVerificationPasses.get(sessionId) ?? 0
           let runUsedTools = false
           let shouldAutoContinueLongRunning = false
           const liveToolNames = new Map<string, string>()
 
           // Tool input throttling state — defined before try block so finally can safely dispose
-          const toolInputThrottle = new Map<
-            string,
-            {
-              lastFlush: number
-              pending?: Record<string, unknown>
-              timer?: ReturnType<typeof setTimeout>
-              lastSent?: string
-            }
-          >()
-          const chatToolInputThrottle = new Map<
-            string,
-            {
-              lastFlush: number
-              pending?: Record<string, unknown>
-              timer?: ReturnType<typeof setTimeout>
-              lastSent?: string
-            }
-          >()
+          const liveToolInputThrottle = new Map<string, LiveToolInputThrottleEntry>()
           const unthrottledLiveToolInputs = new Set(['TaskCreate', 'TaskUpdate'])
 
           const disposeToolInputQueues = (): void => {
-            for (const entry of toolInputThrottle.values()) {
-              if (entry.timer) clearTimeout(entry.timer)
+            for (const entry of liveToolInputThrottle.values()) {
+              if (entry.chatTimer) clearTimeout(entry.chatTimer)
+              if (entry.agentTimer) clearTimeout(entry.agentTimer)
             }
-            for (const entry of chatToolInputThrottle.values()) {
-              if (entry.timer) clearTimeout(entry.timer)
-            }
-            toolInputThrottle.clear()
-            chatToolInputThrottle.clear()
+            liveToolInputThrottle.clear()
           }
 
           try {
@@ -3659,106 +3637,183 @@ export function useChatActions(): {
               isSessionForeground(sessionId!) ? TOOL_INPUT_FLUSH_MS : BACKGROUND_TOOL_INPUT_FLUSH_MS
             )
 
-            const flushChatToolInput = (toolCallId: string): void => {
-              const entry = chatToolInputThrottle.get(toolCallId)
-              if (!entry?.pending) return
-              const snapshot = JSON.stringify(entry.pending)
-              if (snapshot === entry.lastSent) {
-                entry.pending = undefined
-                return
+            const getLiveToolInputEntry = (toolCallId: string): LiveToolInputThrottleEntry => {
+              let entry = liveToolInputThrottle.get(toolCallId)
+              if (!entry) {
+                entry = {
+                  lastChatFlush: 0,
+                  lastAgentFlush: 0,
+                  lineCountCache: new Map()
+                }
+                liveToolInputThrottle.set(toolCallId, entry)
               }
-              entry.lastFlush = Date.now()
-              entry.lastSent = snapshot
-              const pending = entry.pending
-              entry.pending = undefined
-              updateRuntimeToolUseInput(sessionId!, assistantMsgId, toolCallId, pending)
+              return entry
             }
 
-            const flushToolInput = (toolCallId: string): void => {
+            const clearToolInputPending = (toolCallId: string): void => {
+              const entry = liveToolInputThrottle.get(toolCallId)
+              if (!entry) return
+              if (entry.chatTimer) {
+                clearTimeout(entry.chatTimer)
+                entry.chatTimer = undefined
+              }
+              if (entry.agentTimer) {
+                clearTimeout(entry.agentTimer)
+                entry.agentTimer = undefined
+              }
+              entry.pendingRaw = undefined
+              entry.pendingSummary = undefined
+              entry.pendingSignature = undefined
+            }
+
+            const maybeClearDeliveredToolInput = (toolCallId: string, signature: string): void => {
+              const entry = liveToolInputThrottle.get(toolCallId)
+              if (!entry || entry.pendingSignature !== signature) return
+              const needsAgentUpdate = isSessionForeground(sessionId!)
+              if (
+                entry.lastChatSent === signature &&
+                (!needsAgentUpdate || entry.lastAgentSent === signature)
+              ) {
+                entry.pendingRaw = undefined
+                entry.pendingSummary = undefined
+                entry.pendingSignature = undefined
+              }
+            }
+
+            const getPendingLiveToolInput = (
+              toolCallId: string,
+              toolName = liveToolNames.get(toolCallId) ?? ''
+            ): { summary: Record<string, unknown>; signature: string } | null => {
+              const entry = liveToolInputThrottle.get(toolCallId)
+              if (!entry?.pendingRaw) return null
+
+              if (!entry.pendingSummary || !entry.pendingSignature) {
+                const startedAt = performance.now()
+                const summary = summarizeToolInputForLiveCard(toolName, entry.pendingRaw, {
+                  lineCountCache: entry.lineCountCache,
+                  cacheKeyPrefix: `${toolCallId}:${toolName || 'unknown'}`
+                })
+                const signature = liveToolInputSignature(summary)
+                entry.pendingSummary = summary
+                entry.pendingSignature = signature
+                recordStreamingToolArgsDuration(performance.now() - startedAt, {
+                  toolCallId,
+                  toolName,
+                  inputKeys: Object.keys(entry.pendingRaw).length,
+                  outputKeys: Object.keys(summary).length
+                })
+              }
+
+              return {
+                summary: entry.pendingSummary,
+                signature: entry.pendingSignature
+              }
+            }
+
+            const summarizeImmediateLiveToolInput = (
+              toolCallId: string,
+              toolName: string,
+              input: Record<string, unknown>
+            ): Record<string, unknown> => {
+              const entry = getLiveToolInputEntry(toolCallId)
+              const startedAt = performance.now()
+              const summary = summarizeToolInputForLiveCard(toolName, input, {
+                lineCountCache: entry.lineCountCache,
+                cacheKeyPrefix: `${toolCallId}:${toolName || 'unknown'}`
+              })
+              recordStreamingToolArgsDuration(performance.now() - startedAt, {
+                toolCallId,
+                toolName,
+                inputKeys: Object.keys(input).length,
+                outputKeys: Object.keys(summary).length,
+                immediate: true
+              })
+              return summary
+            }
+
+            const flushChatToolInput = (toolCallId: string, toolName?: string): void => {
+              const entry = liveToolInputThrottle.get(toolCallId)
+              if (!entry?.pendingRaw) return
+              const pending = getPendingLiveToolInput(toolCallId, toolName)
+              if (!pending) return
+              entry.lastChatFlush = Date.now()
+              if (pending.signature !== entry.lastChatSent) {
+                entry.lastChatSent = pending.signature
+                updateRuntimeToolUseInput(sessionId!, assistantMsgId, toolCallId, pending.summary)
+              }
+              maybeClearDeliveredToolInput(toolCallId, pending.signature)
+            }
+
+            const flushAgentToolInput = (toolCallId: string, toolName?: string): void => {
               if (!isSessionForeground(sessionId!)) return
-              const entry = toolInputThrottle.get(toolCallId)
-              if (!entry?.pending) return
-              const snapshot = JSON.stringify(entry.pending)
-              if (snapshot === entry.lastSent) {
-                entry.pending = undefined
-                return
+              const entry = liveToolInputThrottle.get(toolCallId)
+              if (!entry?.pendingRaw) return
+              const pending = getPendingLiveToolInput(toolCallId, toolName)
+              if (!pending) return
+              entry.lastAgentFlush = Date.now()
+              if (pending.signature !== entry.lastAgentSent) {
+                entry.lastAgentSent = pending.signature
+                useAgentStore
+                  .getState()
+                  .updateToolCall(toolCallId, { input: pending.summary }, sessionId!)
               }
-              entry.lastFlush = Date.now()
-              entry.lastSent = snapshot
-              const pending = entry.pending
-              entry.pending = undefined
-              useAgentStore.getState().updateToolCall(toolCallId, { input: pending }, sessionId!)
+              maybeClearDeliveredToolInput(toolCallId, pending.signature)
             }
 
-            const scheduleChatToolInputUpdate = (
+            const scheduleLiveToolInputUpdate = (
               toolCallId: string,
               partialInput: Record<string, unknown>,
               toolName = ''
             ): void => {
               const now = Date.now()
-              const entry = chatToolInputThrottle.get(toolCallId) ?? { lastFlush: 0 }
-              entry.pending = partialInput
-              chatToolInputThrottle.set(toolCallId, entry)
+              const entry = getLiveToolInputEntry(toolCallId)
+              entry.pendingRaw = partialInput
+              entry.pendingSummary = undefined
+              entry.pendingSignature = undefined
 
               if (unthrottledLiveToolInputs.has(toolName)) {
-                if (entry.timer) {
-                  clearTimeout(entry.timer)
-                  entry.timer = undefined
+                if (entry.chatTimer) {
+                  clearTimeout(entry.chatTimer)
+                  entry.chatTimer = undefined
                 }
-                flushChatToolInput(toolCallId)
+                if (entry.agentTimer) {
+                  clearTimeout(entry.agentTimer)
+                  entry.agentTimer = undefined
+                }
+                flushChatToolInput(toolCallId, toolName)
+                flushAgentToolInput(toolCallId, toolName)
                 return
               }
 
-              if (now - entry.lastFlush >= TOOL_INPUT_FLUSH_MS) {
-                if (entry.timer) {
-                  clearTimeout(entry.timer)
-                  entry.timer = undefined
+              const chatDelay = Math.max(0, TOOL_INPUT_FLUSH_MS - (now - entry.lastChatFlush))
+              if (chatDelay === 0) {
+                if (entry.chatTimer) {
+                  clearTimeout(entry.chatTimer)
+                  entry.chatTimer = undefined
                 }
-                flushChatToolInput(toolCallId)
-                return
+                flushChatToolInput(toolCallId, toolName)
+              } else if (!entry.chatTimer) {
+                entry.chatTimer = setTimeout(() => {
+                  entry.chatTimer = undefined
+                  flushChatToolInput(toolCallId, toolName)
+                }, chatDelay)
               }
 
-              if (!entry.timer) {
-                entry.timer = setTimeout(() => {
-                  entry.timer = undefined
-                  flushChatToolInput(toolCallId)
-                }, TOOL_INPUT_FLUSH_MS)
-              }
-            }
-
-            const scheduleToolInputUpdate = (
-              toolCallId: string,
-              partialInput: Record<string, unknown>,
-              toolName = ''
-            ): void => {
-              const now = Date.now()
-              const entry = toolInputThrottle.get(toolCallId) ?? { lastFlush: 0 }
-              entry.pending = partialInput
-              toolInputThrottle.set(toolCallId, entry)
-
-              if (unthrottledLiveToolInputs.has(toolName)) {
-                if (entry.timer) {
-                  clearTimeout(entry.timer)
-                  entry.timer = undefined
+              const agentInterval = isSessionForeground(sessionId!)
+                ? AGENT_TOOL_INPUT_FLUSH_MS
+                : BACKGROUND_TOOL_INPUT_FLUSH_MS
+              const agentDelay = Math.max(0, agentInterval - (now - entry.lastAgentFlush))
+              if (agentDelay === 0) {
+                if (entry.agentTimer) {
+                  clearTimeout(entry.agentTimer)
+                  entry.agentTimer = undefined
                 }
-                flushToolInput(toolCallId)
-                return
-              }
-
-              if (now - entry.lastFlush >= 60) {
-                if (entry.timer) {
-                  clearTimeout(entry.timer)
-                  entry.timer = undefined
-                }
-                flushToolInput(toolCallId)
-                return
-              }
-
-              if (!entry.timer) {
-                entry.timer = setTimeout(() => {
-                  entry.timer = undefined
-                  flushToolInput(toolCallId)
-                }, 60)
+                flushAgentToolInput(toolCallId, toolName)
+              } else if (!entry.agentTimer) {
+                entry.agentTimer = setTimeout(() => {
+                  entry.agentTimer = undefined
+                  flushAgentToolInput(toolCallId, toolName)
+                }, agentDelay)
               }
             }
 
@@ -3912,9 +3967,7 @@ export function useChatActions(): {
                 case 'tool_use_args_delta': {
                   // Real-time partial args update via partial-json parsing
                   const toolName = liveToolNames.get(event.toolCallId) ?? ''
-                  const liveCardInput = summarizeToolInputForLiveCard(toolName, event.partialInput)
-                  scheduleChatToolInputUpdate(event.toolCallId, liveCardInput, toolName)
-                  scheduleToolInputUpdate(event.toolCallId, liveCardInput, toolName)
+                  scheduleLiveToolInputUpdate(event.toolCallId, event.partialInput, toolName)
                   break
                 }
 
@@ -3953,7 +4006,8 @@ export function useChatActions(): {
                       type: 'tool_use',
                       id: event.toolUseBlock.id,
                       name: event.toolUseBlock.name,
-                      input: summarizeToolInputForLiveCard(
+                      input: summarizeImmediateLiveToolInput(
+                        event.toolUseBlock.id,
                         event.toolUseBlock.name,
                         event.toolUseBlock.input
                       ),
@@ -3966,7 +4020,8 @@ export function useChatActions(): {
                         {
                           id: event.toolUseBlock.id,
                           name: event.toolUseBlock.name,
-                          input: summarizeToolInputForLiveCard(
+                          input: summarizeImmediateLiveToolInput(
+                            event.toolUseBlock.id,
                             event.toolUseBlock.name,
                             event.toolUseBlock.input
                           ),
@@ -3982,14 +4037,14 @@ export function useChatActions(): {
                     }
                   }
                   // Args fully streamed — keep live cards compact until execution finishes.
-                  const liveCardInput = summarizeToolInputForLiveCard(
+                  clearToolInputPending(event.toolUseBlock.id)
+                  const liveCardInput = summarizeImmediateLiveToolInput(
+                    event.toolUseBlock.id,
                     event.toolUseBlock.name,
                     event.toolUseBlock.input
                   )
                   streamDeltaBuffer.setToolInput(event.toolUseBlock.id, liveCardInput)
                   streamDeltaBuffer.flushNow()
-                  flushChatToolInput(event.toolUseBlock.id)
-                  flushToolInput(event.toolUseBlock.id)
                   if (isSessionForeground(sessionId!)) {
                     useAgentStore.getState().updateToolCall(
                       event.toolUseBlock.id,
@@ -4007,11 +4062,13 @@ export function useChatActions(): {
 
                 case 'tool_call_start':
                   runUsedTools = true
+                  liveToolNames.set(event.toolCall.id, event.toolCall.name)
                   if (isSessionForeground(sessionId!)) {
                     useAgentStore.getState().addToolCall(
                       {
                         ...event.toolCall,
-                        input: summarizeToolInputForLiveCard(
+                        input: summarizeImmediateLiveToolInput(
+                          event.toolCall.id,
                           event.toolCall.name,
                           event.toolCall.input
                         )
@@ -4022,6 +4079,7 @@ export function useChatActions(): {
                   break
 
                 case 'tool_call_approval_needed': {
+                  liveToolNames.set(event.toolCall.id, event.toolCall.name)
                   // Skip adding to pendingToolCalls when auto-approve is active —
                   // the callback will return true immediately, so no dialog needed.
                   const willAutoApprove =
@@ -4031,7 +4089,8 @@ export function useChatActions(): {
                     useAgentStore.getState().addToolCall(
                       {
                         ...event.toolCall,
-                        input: summarizeToolInputForLiveCard(
+                        input: summarizeImmediateLiveToolInput(
+                          event.toolCall.id,
                           event.toolCall.name,
                           event.toolCall.input
                         )
@@ -4043,6 +4102,8 @@ export function useChatActions(): {
                 }
 
                 case 'tool_call_result': {
+                  liveToolNames.set(event.toolCall.id, event.toolCall.name)
+                  clearToolInputPending(event.toolCall.id)
                   if (event.toolCall.name === 'Write') {
                     console.log('[WriteTrace] tool_call_result', {
                       sessionId,
@@ -4261,7 +4322,7 @@ export function useChatActions(): {
                     loopEndReason: event.reason,
                     runUsedTools,
                     preRunTaskSnapshot,
-                    verificationPassIndex
+                    verificationPassIndex: 0
                   })
                   if (
                     event.messages &&
@@ -4487,15 +4548,10 @@ export function useChatActions(): {
             dispatchNextQueuedMessage(sessionId)
 
             if (shouldAutoContinueLongRunning) {
-              longRunningVerificationPasses.set(sessionId, verificationPassIndex + 1)
               queueMicrotask(() => {
-                void sendMessage('', undefined, 'continue', sessionId, null, assistantMsgId, {
-                  longRunningMode: true
-                })
+                void sendMessage('', undefined, 'continue', sessionId, null, assistantMsgId)
               })
             } else {
-              longRunningVerificationPasses.delete(sessionId)
-
               if (!isSessionForeground(sessionId)) {
                 const sessionTitle =
                   useChatStore.getState().sessions.find((session) => session.id === sessionId)

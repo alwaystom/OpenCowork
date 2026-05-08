@@ -1,3 +1,9 @@
+import {
+  liveToolInputSignature,
+  summarizeLiveToolInput,
+  type LiveToolInputSummaryOptions
+} from '../../../../shared/live-tool-input-summary'
+
 const EDIT_TOOL_PREVIEW_CHARS = 800
 const WRITE_TOOL_PREVIEW_CHARS = 1200
 // Inline limits deliberately aggressive: any Write > 4KB or Edit payload > 2KB
@@ -168,55 +174,14 @@ export function compactStreamingToolInput(input: Record<string, unknown>): Recor
 
 export function summarizeToolInputForLiveCard(
   toolName: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  options?: LiveToolInputSummaryOptions
 ): Record<string, unknown> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return input
-
-  if (toolName === 'visualize_show_widget') {
-    return input
-  }
-
-  if (toolName === 'Write' && typeof input.content === 'string') {
-    const content = input.content
-    return {
-      ...(input.file_path !== undefined ? { file_path: input.file_path } : {}),
-      ...(input.path !== undefined ? { path: input.path } : {}),
-      content_lines: content.length === 0 ? 0 : lineCount(content),
-      content_chars: content.length,
-      content_hidden_until_complete: true,
-      ...(content.length > WRITE_TOOL_PREVIEW_CHARS ? { content_truncated: true } : {})
-    }
-  }
-
-  if (
-    toolName === 'Edit' &&
-    (typeof input.old_string === 'string' || typeof input.new_string === 'string')
-  ) {
-    const oldStr = typeof input.old_string === 'string' ? input.old_string : ''
-    const newStr = typeof input.new_string === 'string' ? input.new_string : ''
-    return {
-      ...(input.file_path !== undefined ? { file_path: input.file_path } : {}),
-      ...(input.path !== undefined ? { path: input.path } : {}),
-      ...(input.explanation !== undefined ? { explanation: input.explanation } : {}),
-      ...(input.replace_all !== undefined ? { replace_all: input.replace_all } : {}),
-      ...(typeof input.old_string === 'string'
-        ? {
-            old_string_lines: oldStr.length === 0 ? 0 : lineCount(oldStr),
-            old_string_chars: oldStr.length
-          }
-        : {}),
-      ...(typeof input.new_string === 'string'
-        ? {
-            new_string_lines: newStr.length === 0 ? 0 : lineCount(newStr),
-            new_string_chars: newStr.length
-          }
-        : {}),
-      content_hidden_until_complete: true
-    }
-  }
-
-  return compactStreamingToolInput(input)
+  return summarizeLiveToolInput(toolName, input, options)
 }
+
+export { liveToolInputSignature }
+export type { LiveLineCountCache } from '../../../../shared/live-tool-input-summary'
 
 export function summarizeToolInputForHistory(
   toolName: string,

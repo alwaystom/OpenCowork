@@ -29,11 +29,7 @@ import { useSshStore } from './stores/ssh-store'
 import { useTaskStore } from './stores/task-store'
 import { useTeamStore } from './stores/team-store'
 import { useUIStore } from './stores/ui-store'
-import {
-  registerAllTools,
-  updateWebSearchToolRegistration,
-  updateBrowserToolRegistration
-} from './lib/tools'
+import { registerAllTools, updateWebSearchToolRegistration } from './lib/tools'
 import { updateAppPluginToolRegistration } from './lib/app-plugin'
 import { registerAllProviders } from './lib/api'
 import { registerAllViewers } from './lib/preview/register-viewers'
@@ -315,6 +311,8 @@ function App(): React.JSX.Element {
           detailPanelContent: null,
           previewPanelOpen: false,
           previewPanelState: null,
+          previewPanelTabs: [],
+          activePreviewPanelTabId: null,
           orchestrationConsoleOpen: false,
           selectedOrchestrationRunId: null,
           selectedOrchestrationMemberId: null,
@@ -432,7 +430,6 @@ function App(): React.JSX.Element {
           external_chat_id?: string | null
           provider_id?: string | null
           model_id?: string | null
-          long_running_mode?: number | null
         }
       }
 
@@ -821,12 +818,6 @@ function App(): React.JSX.Element {
     updateWebSearchToolRegistration(webSearchEnabled)
   }, [webSearchEnabled])
 
-  // Update built-in browser tool registration based on settings
-  const builtinBrowserEnabled = useSettingsStore((s) => s.builtinBrowserEnabled)
-  useEffect(() => {
-    updateBrowserToolRegistration(builtinBrowserEnabled)
-  }, [builtinBrowserEnabled])
-
   useEffect(() => {
     updateAppPluginToolRegistration()
 
@@ -836,10 +827,16 @@ function App(): React.JSX.Element {
     const unsubscribeProvider = useProviderStore.subscribe(() => {
       updateAppPluginToolRegistration()
     })
+    const unsubscribeChat = useChatStore.subscribe((state, previousState) => {
+      if (state.activeProjectId !== previousState.activeProjectId) {
+        updateAppPluginToolRegistration()
+      }
+    })
 
     return () => {
       unsubscribePlugin()
       unsubscribeProvider()
+      unsubscribeChat()
     }
   }, [])
 

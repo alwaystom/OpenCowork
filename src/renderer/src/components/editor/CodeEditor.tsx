@@ -27,6 +27,9 @@ export interface CodeEditorProps {
   onChange?: (value: string) => void
   onSave?: () => void | Promise<void>
   onOpenFile?: (filePath: string) => void | Promise<void>
+  initialLine?: number
+  initialColumn?: number
+  initialPositionKey?: number
 }
 
 export interface CodeEditorHandle {
@@ -45,7 +48,10 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(fu
     options,
     onChange,
     onSave,
-    onOpenFile
+    onOpenFile,
+    initialLine,
+    initialColumn,
+    initialPositionKey
   },
   ref
 ): React.JSX.Element {
@@ -120,12 +126,35 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(fu
     [filePath, onOpenFile, workspace]
   )
 
+  const revealInitialPosition = React.useCallback(
+    (monacoEditor: import('monaco-editor').editor.IStandaloneCodeEditor | null) => {
+      if (!monacoEditor || !initialLine || initialLine < 1) return
+
+      const model = monacoEditor.getModel()
+      const requestedLine = Math.floor(initialLine)
+      const lineNumber = Math.min(
+        Math.max(1, requestedLine),
+        model?.getLineCount() ?? requestedLine
+      )
+      const requestedColumn = Math.max(1, Math.floor(initialColumn ?? 1))
+      const column = Math.min(
+        requestedColumn,
+        model?.getLineMaxColumn(lineNumber) ?? requestedColumn
+      )
+      monacoEditor.setPosition({ lineNumber, column })
+      monacoEditor.revealLineInCenter(lineNumber)
+      monacoEditor.focus()
+    },
+    [initialColumn, initialLine]
+  )
+
   const handleMount = React.useCallback(
     (
       monacoEditor: import('monaco-editor').editor.IStandaloneCodeEditor,
       monacoInstance: typeof import('monaco-editor')
     ) => {
       editorRef.current = monacoEditor
+      revealInitialPosition(monacoEditor)
 
       if (onSave) {
         monacoEditor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
@@ -146,8 +175,12 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(fu
         })
       }
     },
-    [onOpenFile, onSave, openImportSource]
+    [onOpenFile, onSave, openImportSource, revealInitialPosition]
   )
+
+  React.useEffect(() => {
+    revealInitialPosition(editorRef.current)
+  }, [initialPositionKey, path, revealInitialPosition])
 
   return (
     <React.Suspense

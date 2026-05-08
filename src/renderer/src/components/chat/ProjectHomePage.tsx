@@ -28,7 +28,7 @@ export function ProjectHomePage(): React.JSX.Element {
     (text: string, images?: ImageAttachment[], options?: SendMessageOptions): void => {
       if (!activeProjectId) return
       const chatStore = useChatStore.getState()
-      const sessionId = chatStore.createSession(mode, activeProjectId, options)
+      const sessionId = chatStore.createSession(mode, activeProjectId)
       useUIStore.getState().navigateToSession(sessionId)
       void sendMessage(text, images, undefined, sessionId, undefined, undefined, {
         ...options,

@@ -87,7 +87,6 @@ export interface Session {
   modelId?: string
   /** In-memory prompt snapshot reused within the current app session */
   promptSnapshot?: SessionPromptSnapshot
-  longRunningMode?: boolean
 }
 
 export interface ImageGenerationTiming {
@@ -96,7 +95,6 @@ export interface ImageGenerationTiming {
 }
 
 export interface CreateSessionOptions {
-  longRunningMode?: boolean
   preserveProjectless?: boolean
   planId?: string | null
 }
@@ -120,8 +118,7 @@ function dbCreateSession(s: Session): void {
       planId: s.planId,
       pinned: s.pinned,
       providerId: s.providerId,
-      modelId: s.modelId,
-      longRunningMode: s.longRunningMode
+      modelId: s.modelId
     })
     .catch(() => {})
     .finally(() => {
@@ -505,7 +502,6 @@ interface ChatStore {
   updateSessionModel: (sessionId: string, providerId: string, modelId: string) => void
   clearSessionModelBinding: (sessionId: string) => void
   setSessionPlanId: (sessionId: string, planId: string | null) => void
-  setSessionLongRunningMode: (sessionId: string, enabled: boolean) => void
   setSessionPromptSnapshot: (sessionId: string, snapshot: SessionPromptSnapshot) => void
   clearSessionPromptSnapshot: (sessionId: string) => void
   clearSessionMessages: (sessionId: string) => void
@@ -617,7 +613,6 @@ interface SessionRow {
   external_chat_id?: string | null
   provider_id?: string | null
   model_id?: string | null
-  long_running_mode?: number | null
 }
 
 interface MessageRow {
@@ -683,8 +678,7 @@ function rowToSession(row: SessionRow, messages: UnifiedMessage[] = []): Session
     pluginId: row.plugin_id ?? undefined,
     externalChatId: row.external_chat_id ?? undefined,
     providerId: row.provider_id ?? undefined,
-    modelId: row.model_id ?? undefined,
-    longRunningMode: row.long_running_mode === 1
+    modelId: row.model_id ?? undefined
   }
 }
 
@@ -710,7 +704,6 @@ function mergeSessionSummary(
   session.externalChatId = next.externalChatId
   session.providerId = next.providerId
   session.modelId = next.modelId
-  session.longRunningMode = next.longRunningMode
   // When preserveLoadedMessages is true the in-memory state may already be
   // ahead of the DB snapshot (e.g. beginUserTurn appended messages that the
   // fire-and-forget persist hasn't landed yet). Accepting a stale lower count
@@ -1939,8 +1932,7 @@ export const useChatStore = create<ChatStore>()(
         sshConnectionId: targetProject?.sshConnectionId,
         planId: options?.planId ?? undefined,
         providerId: sessionProviderId,
-        modelId: sessionModelId,
-        longRunningMode: options?.longRunningMode ?? false
+        modelId: sessionModelId
       }
       set((state) => {
         state.sessions.push(newSession)
@@ -2237,19 +2229,6 @@ export const useChatStore = create<ChatStore>()(
       dbUpdateSession(sessionId, { planId, updatedAt: now })
     },
 
-    setSessionLongRunningMode: (sessionId, enabled) => {
-      const now = Date.now()
-      set((state) => {
-        const session = state.sessions.find((s) => s.id === sessionId)
-        if (session) {
-          session.longRunningMode = enabled
-          delete session.promptSnapshot
-          session.updatedAt = now
-        }
-      })
-      dbUpdateSession(sessionId, { longRunningMode: enabled, updatedAt: now })
-    },
-
     setSessionPromptSnapshot: (sessionId, snapshot) => {
       set((state) => {
         const session = state.sessions.find((s) => s.id === sessionId)
@@ -2430,6 +2409,11 @@ export const useChatStore = create<ChatStore>()(
         updatedAt: now,
         pluginId: undefined
       }
+
+      set((state) => {
+        state.projects.unshift(importedProject)
+        state.activeProjectId = importedProject.id
+      })
 
       dbCreateProject(importedProject)
 
@@ -2617,8 +2601,7 @@ export const useChatStore = create<ChatStore>()(
         workingFolder: source.workingFolder,
         sshConnectionId: source.sshConnectionId,
         providerId: source.providerId,
-        modelId: source.modelId,
-        longRunningMode: source.longRunningMode ?? false
+        modelId: source.modelId
       }
       set((state) => {
         state.sessions.push(newSession)

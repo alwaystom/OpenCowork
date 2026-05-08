@@ -8,7 +8,6 @@ import { TooltipProvider } from '@renderer/components/ui/tooltip'
 import { TitleBar } from './TitleBar'
 import { WorkspaceSidebar } from './WorkspaceSidebar'
 import { RightPanel } from './RightPanel'
-import { PreviewPanel } from './PreviewPanel'
 import { SubAgentExecutionDetail } from './SubAgentExecutionDetail'
 import { RIGHT_PANEL_TAB_ORDER } from './right-panel-defs'
 import { SettingsDialog } from '@renderer/components/settings/SettingsDialog'
@@ -85,9 +84,6 @@ export function Layout({ updateInfo, onOpenUpdateDialog }: LayoutProps): React.J
   const mode = useUIStore((s) => s.mode)
   const setMode = useUIStore((s) => s.setMode)
   const leftSidebarOpen = useUIStore((s) => s.leftSidebarOpen)
-  const previewPanelOpen = useUIStore((s) => s.previewPanelOpen)
-  const previewPanelState = useUIStore((s) => s.previewPanelState)
-  const closePreviewPanel = useUIStore((s) => s.closePreviewPanel)
   const subAgentExecutionDetailOpen = useUIStore((s) => s.subAgentExecutionDetailOpen)
   const subAgentExecutionDetailToolUseId = useUIStore((s) => s.subAgentExecutionDetailToolUseId)
   const subAgentExecutionDetailInlineText = useUIStore((s) => s.subAgentExecutionDetailInlineText)
@@ -807,26 +803,6 @@ export function Layout({ updateInfo, onOpenUpdateDialog }: LayoutProps): React.J
         </div>
       </div>
 
-      <Dialog
-        open={previewPanelOpen && previewPanelState?.source === 'file'}
-        onOpenChange={(open) => {
-          if (!open) closePreviewPanel()
-        }}
-      >
-        <DialogContent
-          showCloseButton={false}
-          className="h-[calc(100vh-4rem)] w-[calc(100vw-4rem)] max-w-6xl overflow-hidden p-0 sm:max-w-6xl"
-          onEscapeKeyDown={(event) => event.preventDefault()}
-          onPointerDownOutside={(event) => event.preventDefault()}
-        >
-          <DialogHeader className="sr-only">
-            <DialogTitle>
-              {previewPanelState?.filePath?.split(/[\\/]/).pop() ?? 'File Preview'}
-            </DialogTitle>
-          </DialogHeader>
-          <PreviewPanel embedded />
-        </DialogContent>
-      </Dialog>
       <Dialog
         open={subAgentExecutionDetailOpen}
         onOpenChange={(open) => {

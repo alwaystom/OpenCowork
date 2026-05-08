@@ -306,8 +306,17 @@ export function loadPersistedJobs(): void {
   try {
     const db = getDb()
 
-    // Clean up expired 'at' jobs that are in the past
+    // Runs do not survive app restarts, so any unfinished background run is stale.
     const now = Date.now()
+    db.prepare(
+      `UPDATE cron_runs
+          SET finished_at = COALESCE(finished_at, ?),
+              status = 'aborted',
+              error = COALESCE(error, 'Cron run interrupted before completion')
+        WHERE status = 'running' AND finished_at IS NULL`
+    ).run(now)
+
+    // Clean up expired 'at' jobs that are in the past
     db.prepare(
       "UPDATE cron_jobs SET enabled = 0, deleted_at = COALESCE(deleted_at, ?), updated_at = ? WHERE schedule_kind = 'at' AND schedule_at < ? AND delete_after_run = 1 AND deleted_at IS NULL"
     ).run(now, now, now)

@@ -174,6 +174,34 @@ function sanitizeHeaders(headers: Record<string, string>): Record<string, string
   return sanitized
 }
 
+const REQUEST_BODY_MANAGED_HEADERS = new Set([
+  'connection',
+  'content-length',
+  'expect',
+  'host',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade'
+])
+
+function buildForwardHeaders(
+  headers: Record<string, string>,
+  bodyBuffer: Buffer | null
+): Record<string, string> {
+  const sanitized = sanitizeHeaders(headers)
+  const forwarded: Record<string, string> = {}
+  for (const [key, value] of Object.entries(sanitized)) {
+    if (REQUEST_BODY_MANAGED_HEADERS.has(key.toLowerCase())) continue
+    forwarded[key] = value
+  }
+  if (bodyBuffer) forwarded['Content-Length'] = String(bodyBuffer.byteLength)
+  return forwarded
+}
+
 const INSECURE_PROXY_SESSION_PARTITION = 'persist:open-cowork-provider-insecure-tls-proxy'
 let insecureProxySessionState: {
   promise: Promise<Electron.Session>
@@ -496,7 +524,7 @@ async function requestViaSystemProxy(args: {
   const requestUrl = url.trim()
   const requestSession = allowInsecureTls ? await getInsecureProxySession() : undefined
   const bodyBuffer = body ? Buffer.from(body, 'utf-8') : null
-  const reqHeaders = sanitizeHeaders({ ...headers })
+  const reqHeaders = buildForwardHeaders(headers, bodyBuffer)
 
   return new Promise((resolve) => {
     let done = false
@@ -582,10 +610,7 @@ export function registerApiProxyHandlers(): void {
       const httpModule = isHttps ? https : http
 
       const bodyBuffer = body ? Buffer.from(body, 'utf-8') : null
-      const reqHeaders = { ...headers }
-      if (bodyBuffer) {
-        reqHeaders['Content-Length'] = String(bodyBuffer.byteLength)
-      }
+      const reqHeaders = buildForwardHeaders(headers, bodyBuffer)
 
       return new Promise<AttemptOutcome>((resolve) => {
         const options = {
@@ -828,7 +853,7 @@ export function registerApiProxyHandlers(): void {
           if (useSystemProxy) {
             const requestUrl = url.trim()
             const bodyBuffer = body ? Buffer.from(body, 'utf-8') : null
-            const reqHeaders = sanitizeHeaders({ ...headers })
+            const reqHeaders = buildForwardHeaders(headers, bodyBuffer)
 
             let idleTimer: ReturnType<typeof setTimeout> | null = null
             const clearIdleTimer = (): void => {
@@ -988,10 +1013,7 @@ export function registerApiProxyHandlers(): void {
           const httpModule = isHttps ? https : http
 
           const bodyBuffer = body ? Buffer.from(body, 'utf-8') : null
-          const reqHeaders = { ...headers }
-          if (bodyBuffer) {
-            reqHeaders['Content-Length'] = String(bodyBuffer.byteLength)
-          }
+          const reqHeaders = buildForwardHeaders(headers, bodyBuffer)
 
           const options = {
             hostname: parsedUrl.hostname,

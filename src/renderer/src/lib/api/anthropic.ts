@@ -15,6 +15,35 @@ function buildAnthropicCacheControl(): { type: 'ephemeral' } {
   return { type: 'ephemeral' }
 }
 
+const MIN_ANTHROPIC_THINKING_BUDGET = 1024
+
+function normalizeAnthropicThinkingBodyParams(
+  bodyParams?: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  if (!bodyParams) return undefined
+
+  const nextBodyParams: Record<string, unknown> = { ...bodyParams }
+  const rawEnableThinking = nextBodyParams.enable_thinking
+  delete nextBodyParams.enable_thinking
+
+  if (!('thinking' in nextBodyParams) && typeof rawEnableThinking === 'boolean') {
+    nextBodyParams.thinking = rawEnableThinking
+      ? { type: 'enabled', budget_tokens: MIN_ANTHROPIC_THINKING_BUDGET }
+      : { type: 'disabled' }
+  }
+
+  const thinking = nextBodyParams.thinking
+  if (thinking && typeof thinking === 'object' && !Array.isArray(thinking)) {
+    const normalizedThinking = { ...(thinking as Record<string, unknown>) }
+    if (normalizedThinking.type === 'enabled' && normalizedThinking.budget_tokens === undefined) {
+      normalizedThinking.budget_tokens = MIN_ANTHROPIC_THINKING_BUDGET
+    }
+    nextBodyParams.thinking = normalizedThinking
+  }
+
+  return nextBodyParams
+}
+
 function resolveAnthropicEffort(
   config: ProviderConfig
 ): 'low' | 'medium' | 'high' | 'max' | undefined {
@@ -43,10 +72,11 @@ function readNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
 }
 
-function readAnthropicThinkingBudget(config: ProviderConfig): number | undefined {
-  if (!config.thinkingEnabled) return undefined
-
-  const thinking = config.thinkingConfig?.bodyParams?.thinking
+function readAnthropicThinkingBudgetFromBodyParams(
+  bodyParams?: Record<string, unknown>
+): number | undefined {
+  const normalizedBodyParams = normalizeAnthropicThinkingBodyParams(bodyParams)
+  const thinking = normalizedBodyParams?.thinking
   if (!thinking || typeof thinking !== 'object' || Array.isArray(thinking)) return undefined
 
   const budgetValue = (thinking as Record<string, unknown>).budget_tokens
@@ -60,6 +90,12 @@ function readAnthropicThinkingBudget(config: ProviderConfig): number | undefined
   return Number.isFinite(budgetTokens) && budgetTokens != null && budgetTokens > 0
     ? Math.floor(budgetTokens)
     : undefined
+}
+
+function readAnthropicThinkingBudget(config: ProviderConfig): number | undefined {
+  if (!config.thinkingEnabled) return undefined
+
+  return readAnthropicThinkingBudgetFromBodyParams(config.thinkingConfig?.bodyParams)
 }
 
 function resolveAnthropicMaxTokens(config: ProviderConfig): number {
@@ -76,14 +112,25 @@ function buildAnthropicThinkingBodyParams(
   const bodyParams = config.thinkingConfig?.bodyParams
   if (!config.thinkingEnabled || !bodyParams) return undefined
 
-  const nextBodyParams: Record<string, unknown> = { ...bodyParams }
-  const thinking = bodyParams.thinking
+  return normalizeAnthropicThinkingBodyParams(bodyParams)
+}
 
-  if (thinking && typeof thinking === 'object' && !Array.isArray(thinking)) {
-    nextBodyParams.thinking = { ...(thinking as Record<string, unknown>) }
+function buildAnthropicDisabledThinkingBodyParams(
+  config: ProviderConfig
+): Record<string, unknown> | undefined {
+  const bodyParams = config.thinkingConfig?.disabledBodyParams
+  if (config.thinkingEnabled || !bodyParams) return undefined
+  return normalizeAnthropicThinkingBodyParams(bodyParams)
+}
+
+function normalizeAnthropicThinkingRequestBody(body: Record<string, unknown>): void {
+  const normalized = normalizeAnthropicThinkingBodyParams(body)
+  if (!normalized) return
+
+  for (const key of Object.keys(body)) {
+    delete body[key]
   }
-
-  return nextBodyParams
+  Object.assign(body, normalized)
 }
 
 function extractAnthropicCacheCreationUsage(
@@ -133,6 +180,7 @@ class AnthropicProvider implements APIProvider {
     const promptCacheEnabled = config.enablePromptCache !== false
     const systemPromptCacheEnabled = config.enableSystemPromptCache !== false
     const thinkingBodyParams = buildAnthropicThinkingBodyParams(config)
+    const disabledThinkingBodyParams = buildAnthropicDisabledThinkingBodyParams(config)
     const body: Record<string, unknown> = {
       model: config.model,
       max_tokens: resolveAnthropicMaxTokens(config),
@@ -172,10 +220,11 @@ class AnthropicProvider implements APIProvider {
       if (config.thinkingConfig.forceTemperature !== undefined) {
         body.temperature = config.thinkingConfig.forceTemperature
       }
-    } else if (!config.thinkingEnabled && config.thinkingConfig?.disabledBodyParams) {
-      Object.assign(body, config.thinkingConfig.disabledBodyParams)
+    } else if (disabledThinkingBodyParams) {
+      Object.assign(body, disabledThinkingBodyParams)
     }
 
+    normalizeAnthropicThinkingRequestBody(body)
     body.max_tokens = resolveAnthropicMaxTokens(config)
 
     const baseUrl = (config.baseUrl || 'https://api.anthropic.com').trim().replace(/\/+$/, '')

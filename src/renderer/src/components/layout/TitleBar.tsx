@@ -19,7 +19,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui
 import { useChatStore } from '@renderer/stores/chat-store'
 import { useSettingsStore } from '@renderer/stores/settings-store'
 import { useUIStore } from '@renderer/stores/ui-store'
-import { ensureProjectTerminalReady } from '@renderer/lib/terminal/project-terminal-context'
 import { cn } from '@renderer/lib/utils'
 import { PendingInboxPopover } from './PendingInboxPopover'
 import { WindowControls } from './WindowControls'
@@ -44,7 +43,6 @@ export function TitleBar({
   updateInfo,
   onOpenUpdateDialog,
   title,
-  subtitle = null,
   tooltip = null,
   showSidebarToggle = true,
   insetForMacTrafficLights = false
@@ -142,22 +140,13 @@ export function TitleBar({
   const handleToggleProjectTerminal = async (): Promise<void> => {
     if (!sessionContext.terminalProjectId || !canOpenProjectTerminal) return
 
-    if (terminalDockOpen) {
-      setBottomTerminalDockOpen(sessionContext.terminalProjectId, false)
-      return
-    }
-
-    setBottomTerminalDockOpen(sessionContext.terminalProjectId, true)
-    await ensureProjectTerminalReady({
-      projectName: sessionContext.terminalProjectName,
-      workingFolder: sessionContext.terminalWorkingFolder,
-      sshConnectionId: sessionContext.terminalSshConnectionId
-    })
+    const nextOpen = !terminalDockOpen
+    setBottomTerminalDockOpen(sessionContext.terminalProjectId, nextOpen)
   }
 
   const handleToggleAutoApprove = async (): Promise<void> => {
     if (!autoApprove) {
-      const ok = await confirm({ title: t('autoApproveConfirm') })
+      const ok = await confirm({ title: t('layout.autoApproveConfirm') })
       if (!ok) return
     }
 
@@ -204,12 +193,6 @@ export function TitleBar({
             <TooltipTrigger asChild>
               <div className="flex min-w-0 items-center gap-2">
                 <div className="truncate text-sm font-semibold text-foreground/92">{title}</div>
-                {subtitle ? (
-                  <>
-                    <span className="shrink-0 text-muted-foreground/35">/</span>
-                    <div className="truncate text-xs text-muted-foreground/72">{subtitle}</div>
-                  </>
-                ) : null}
               </div>
             </TooltipTrigger>
             {tooltip ? <TooltipContent>{tooltip}</TooltipContent> : null}

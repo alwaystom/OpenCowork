@@ -44,10 +44,7 @@ export interface AskUserStructuredResult {
   autoAnswered?: boolean
 }
 
-const RECOMMENDED_OPTION_RE = /(?:\(|\uFF08)\s*(recommended|\u63A8\u8350)\s*(?:\)|\uFF09)/i
 const MAX_CHIP_WIDTH = 12
-const AUTONOMOUS_ANSWER =
-  'AI selected an answer automatically in long-running mode based on the current context.'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
@@ -124,31 +121,6 @@ export function coerceAskUserQuestions(value: unknown): AskUserQuestionItem[] {
       }
     })
     .filter((question): question is AskUserQuestionItem => question !== null)
-}
-
-function isRecommendedOptionLabel(label: string): boolean {
-  return RECOMMENDED_OPTION_RE.test(label)
-}
-
-function chooseAutonomousAnswers(questions: AskUserQuestionItem[]): AskUserAnswers {
-  const answers: AskUserAnswers = {}
-
-  for (let index = 0; index < questions.length; index += 1) {
-    const item = questions[index]
-    const options = item.options ?? []
-    const recommended = options.filter((option) => isRecommendedOptionLabel(option.label))
-    const preferred = recommended.length > 0 ? recommended : options.slice(0, 1)
-
-    if (preferred.length > 0) {
-      const labels = preferred.map((option) => option.label)
-      answers[String(index)] = item.multiSelect ? labels : labels[0]
-      continue
-    }
-
-    answers[String(index)] = AUTONOMOUS_ANSWER
-  }
-
-  return answers
 }
 
 function deriveHeader(question: string, index: number): string {
@@ -486,21 +458,6 @@ const askUserToolExecute: ToolHandler['execute'] = async (input, ctx) => {
       ? (input.metadata as { source?: unknown })
       : undefined
   const metadataSource = typeof metadata?.source === 'string' ? metadata.source.trim() : undefined
-  const session = ctx.sessionId
-    ? useChatStore.getState().sessions.find((item) => item.id === ctx.sessionId)
-    : undefined
-  const shouldAutoAnswer = Boolean(session?.longRunningMode)
-
-  if (shouldAutoAnswer) {
-    return encodeStructuredToolResult(
-      buildStructuredResult(
-        questions,
-        { answers: chooseAutonomousAnswers(questions) },
-        { autoAnswered: true, source: metadataSource }
-      ) as unknown as Record<string, unknown>
-    )
-  }
-
   if (ctx.pluginId) {
     const lines: string[] = []
     for (const q of questions) {

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { ArrowLeft, ArrowRight, RefreshCw, Square, Globe, AlertCircle } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useUIStore } from '@renderer/stores/ui-store'
+import { getBrowserAccessDecision } from '@renderer/lib/app-plugin/browser-access'
 import { useTranslation } from 'react-i18next'
+import { BUILTIN_BROWSER_PARTITION } from '../../../../shared/browser-plugin'
 
 export function BrowserPanel(): React.JSX.Element {
   const { t } = useTranslation('layout')
@@ -24,6 +26,10 @@ export function BrowserPanel(): React.JSX.Element {
   const [inputUrl, setInputUrl] = useState(storedUrl)
   const [committedUrl, setCommittedUrl] = useState(storedUrl)
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
+  const webviewSessionProps: Pick<React.ComponentProps<'webview'>, 'partition' | 'allowpopups'> = {
+    partition: BUILTIN_BROWSER_PARTITION,
+    allowpopups: true
+  }
 
   useEffect(() => {
     setBrowserWebviewRef(webviewRef)
@@ -45,11 +51,34 @@ export function BrowserPanel(): React.JSX.Element {
     return normalized
   }
 
+  const blockNavigation = useCallback(
+    (url: string, reason?: string): void => {
+      setBrowserErrorInfo({
+        code: -10,
+        desc: reason ?? 'Blocked by browser plugin domain rules',
+        url
+      })
+      setBrowserLoading(false)
+    },
+    [setBrowserErrorInfo, setBrowserLoading]
+  )
+
+  const canNavigateTo = useCallback(
+    (url: string): boolean => {
+      const decision = getBrowserAccessDecision(url)
+      if (decision.allowed) return true
+      blockNavigation(url, decision.reason)
+      return false
+    },
+    [blockNavigation]
+  )
+
   const navigate = useCallback(
     (url: string): void => {
       const normalized = normalizeUrl(url)
       if (!normalized) return
       setInputUrl(normalized)
+      if (!canNavigateTo(normalized)) return
       setCommittedUrl(normalized)
       setBrowserUrl(normalized)
       setBrowserErrorInfo(null)
@@ -58,7 +87,7 @@ export function BrowserPanel(): React.JSX.Element {
         wv.src = normalized
       }
     },
-    [setBrowserUrl, setBrowserErrorInfo]
+    [canNavigateTo, setBrowserUrl, setBrowserErrorInfo]
   )
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
@@ -108,8 +137,14 @@ export function BrowserPanel(): React.JSX.Element {
       setBrowserLoading(false)
     }
 
+    const onWillNavigate = (e: Event & { url?: string; preventDefault: () => void }): void => {
+      if (!e.url || canNavigateTo(e.url)) return
+      e.preventDefault()
+    }
+
     const onNewWindow = (e: Event & { url: string; preventDefault: () => void }): void => {
       e.preventDefault()
+      if (!canNavigateTo(e.url)) return
       window.electron.ipcRenderer.invoke('shell:openExternal', e.url)
     }
 
@@ -119,6 +154,7 @@ export function BrowserPanel(): React.JSX.Element {
     wv.addEventListener('did-navigate-in-page', onNavigateInPage as EventListener)
     wv.addEventListener('page-title-updated', onTitleUpdated as EventListener)
     wv.addEventListener('did-fail-load', onFailLoad as EventListener)
+    wv.addEventListener('will-navigate', onWillNavigate as EventListener)
     wv.addEventListener('new-window', onNewWindow as EventListener)
 
     return () => {
@@ -128,9 +164,11 @@ export function BrowserPanel(): React.JSX.Element {
       wv.removeEventListener('did-navigate-in-page', onNavigateInPage as EventListener)
       wv.removeEventListener('page-title-updated', onTitleUpdated as EventListener)
       wv.removeEventListener('did-fail-load', onFailLoad as EventListener)
+      wv.removeEventListener('will-navigate', onWillNavigate as EventListener)
       wv.removeEventListener('new-window', onNewWindow as EventListener)
     }
   }, [
+    canNavigateTo,
     committedUrl,
     setBrowserLoading,
     setBrowserErrorInfo,
@@ -216,41 +254,41 @@ export function BrowserPanel(): React.JSX.Element {
 
       {/* Content */}
       <div className="relative min-h-0 flex-1">
-        {committedUrl ? (
+        {committedUrl && (
+          <webview
+            ref={webviewRef as React.Ref<Electron.WebviewTag>}
+            src={committedUrl}
+            className="size-full"
+            {...webviewSessionProps}
+          />
+        )}
+        {errorInfo ? (
           <>
-            <webview
-              ref={webviewRef as React.Ref<Electron.WebviewTag>}
-              src={committedUrl}
-              className="size-full"
-              allowpopups={true}
-            />
-            {errorInfo && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background text-sm text-muted-foreground">
-                <AlertCircle className="size-10 opacity-30" />
-                <p className="font-medium">{t('rightPanel.browserLoadFailed')}</p>
-                <p className="text-xs opacity-70">
-                  {errorInfo.desc} ({errorInfo.code})
-                </p>
-                <p className="max-w-[80%] truncate text-xs opacity-50">{errorInfo.url}</p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setBrowserErrorInfo(null)
-                    webviewRef.current?.reload()
-                  }}
-                >
-                  {t('rightPanel.browserRetry')}
-                </Button>
-              </div>
-            )}
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background text-sm text-muted-foreground">
+              <AlertCircle className="size-10 opacity-30" />
+              <p className="font-medium">{t('rightPanel.browserLoadFailed')}</p>
+              <p className="text-xs opacity-70">
+                {errorInfo.desc} ({errorInfo.code})
+              </p>
+              <p className="max-w-[80%] truncate text-xs opacity-50">{errorInfo.url}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setBrowserErrorInfo(null)
+                  webviewRef.current?.reload()
+                }}
+              >
+                {t('rightPanel.browserRetry')}
+              </Button>
+            </div>
           </>
-        ) : (
+        ) : !committedUrl ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
             <Globe className="size-8 opacity-20" />
             <span>{t('rightPanel.browserEmptyState')}</span>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   )

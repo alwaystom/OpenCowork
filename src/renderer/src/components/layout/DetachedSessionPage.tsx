@@ -3,9 +3,7 @@ import { FolderOpen } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useShallow } from 'zustand/react/shallow'
 import { PermissionDialog } from '@renderer/components/cowork/PermissionDialog'
-import { PreviewPanel } from '@renderer/components/layout/PreviewPanel'
 import { Button } from '@renderer/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
 import {
   Tooltip,
   TooltipContent,
@@ -19,6 +17,7 @@ import { cn } from '@renderer/lib/utils'
 import { SessionConversationPane } from './SessionConversationPane'
 import { WorkingFolderSheet } from './WorkingFolderSheet'
 import { WindowControls } from './WindowControls'
+import { RightPanel } from './RightPanel'
 
 interface DetachedSessionPageProps {
   sessionId: string
@@ -46,9 +45,6 @@ export function DetachedSessionPage({ sessionId }: DetachedSessionPageProps): Re
   const resolveApproval = useAgentStore((state) => state.resolveApproval)
   const workingFolderSheetOpen = useUIStore((state) => state.workingFolderSheetOpen)
   const toggleWorkingFolderSheet = useUIStore((state) => state.toggleWorkingFolderSheet)
-  const previewPanelOpen = useUIStore((state) => state.previewPanelOpen)
-  const previewPanelState = useUIStore((state) => state.previewPanelState)
-  const closePreviewPanel = useUIStore((state) => state.closePreviewPanel)
   const isMac = /Mac/.test(navigator.userAgent)
 
   useEffect(() => {
@@ -117,28 +113,8 @@ export function DetachedSessionPage({ sessionId }: DetachedSessionPageProps): Re
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <SessionConversationPane sessionId={sessionId} allowOpenInNewWindow={false} />
           <WorkingFolderSheet sessionId={sessionId} />
+          <RightPanel />
         </div>
-
-        <Dialog
-          open={previewPanelOpen && previewPanelState?.source === 'file'}
-          onOpenChange={(open) => {
-            if (!open) closePreviewPanel()
-          }}
-        >
-          <DialogContent
-            showCloseButton={false}
-            className="h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-6xl overflow-hidden p-0 sm:max-w-6xl"
-            onEscapeKeyDown={(event) => event.preventDefault()}
-            onPointerDownOutside={(event) => event.preventDefault()}
-          >
-            <DialogHeader className="sr-only">
-              <DialogTitle>
-                {previewPanelState?.filePath?.split(/[\\/]/).pop() ?? 'File Preview'}
-              </DialogTitle>
-            </DialogHeader>
-            <PreviewPanel embedded />
-          </DialogContent>
-        </Dialog>
 
         <PermissionDialog
           toolCall={pendingApproval}

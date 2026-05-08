@@ -1,7 +1,16 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import { useShallow } from 'zustand/react/shallow'
-import { MessageSquare, CircleHelp, Briefcase, Code2, ShieldCheck, ArrowDown } from 'lucide-react'
+import {
+  MessageSquare,
+  CircleHelp,
+  Briefcase,
+  Code2,
+  ShieldCheck,
+  ArrowDown,
+  MessagesSquare
+} from 'lucide-react'
 import type { ToolResultContent, UnifiedMessage } from '@renderer/lib/api/types'
 import { useChatStore } from '@renderer/stores/chat-store'
 import { useUIStore } from '@renderer/stores/ui-store'
@@ -16,6 +25,8 @@ import {
 import { buildOrchestrationRuns } from '@renderer/lib/orchestration/build-runs'
 import { type EditableUserMessageDraft } from '@renderer/lib/image-attachments'
 import type { RequestRetryState } from '@renderer/lib/agent/types'
+import { isStreamingPerfEnabled, recordStreamingReactCommit } from '@renderer/lib/streaming-perf'
+import { ipcClient } from '@renderer/lib/ipc/ipc-client'
 
 const modeHints = {
   chat: {
@@ -70,6 +81,34 @@ interface AskUserQuestionPresence {
   toolUseId: string
 }
 
+interface UserMessageLocatorItem {
+  id: string
+  index: number
+  preview: string
+  time: string
+  position: number
+  sortOrder: number
+}
+
+interface UserMessageLocatorSource {
+  id: string
+  content: UnifiedMessage['content']
+  meta?: UnifiedMessage['meta']
+  createdAt: number
+  sortOrder: number
+  source?: UnifiedMessage['source']
+}
+
+interface UserMessageIndexRow {
+  id: string
+  session_id: string
+  role: string
+  content: string
+  meta: string | null
+  created_at: number
+  sort_order: number
+}
+
 type ChatStoreSnapshot = ReturnType<typeof useChatStore.getState>
 type AgentStoreSnapshot = ReturnType<typeof useAgentStore.getState>
 type TeamStoreSnapshot = ReturnType<typeof useTeamStore.getState>
@@ -86,6 +125,7 @@ interface MessageRowProps {
   orchestrationRun?: import('@renderer/lib/orchestration/types').OrchestrationRun | null
   hiddenToolUseIds?: Set<string>
   anchorMessageId?: string | null
+  highlightMessageId?: string | null
   requestRetryState?: RequestRetryState | null
   renderMode?: 'default' | 'transcript' | 'static'
   onRetry?: () => void
@@ -117,9 +157,14 @@ const INITIAL_MESSAGE_ESTIMATED_HEIGHT = 120
 const PROGRAMMATIC_SCROLL_GUARD_MS = 160
 const STREAMING_AUTO_SCROLL_POLL_MS = 500
 const PENDING_ASSISTANT_ROW_KEY_PREFIX = '__pending_assistant__'
+const USER_LOCATOR_PREVIEW_LIMIT = 88
+const USER_LOCATOR_SCROLL_OFFSET = 28
+const USER_LOCATOR_HIGHLIGHT_MS = 1400
+const USER_LOCATOR_WINDOW_LOAD_SIZE = 48
 const EMPTY_ORCHESTRATION_STATE = { runs: [], byId: new Map(), byMessageId: new Map() }
 const MESSAGE_COLUMN_CLASS = 'mx-auto w-full max-w-[820px] px-5'
 const MESSAGE_COLUMN_COMPACT_CLASS = 'mx-auto w-full max-w-[720px] px-5'
+const EMPTY_USER_LOCATOR_ROWS: UserMessageIndexRow[] = []
 
 interface MessageListSessionSelection {
   messages: UnifiedMessage[]
@@ -492,6 +537,7 @@ function areMessageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): 
     prev.orchestrationRun === next.orchestrationRun &&
     prev.hiddenToolUseIds === next.hiddenToolUseIds &&
     prev.anchorMessageId === next.anchorMessageId &&
+    prev.highlightMessageId === next.highlightMessageId &&
     prev.renderMode === next.renderMode &&
     areRequestRetryStatesEqual(prev.requestRetryState, next.requestRetryState) &&
     prev.onRetry === next.onRetry &&
@@ -528,6 +574,191 @@ function findPendingAskUserQuestion(
   return null
 }
 
+function normalizeLocatorPreview(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function truncateLocatorPreview(text: string): string {
+  if (text.length <= USER_LOCATOR_PREVIEW_LIMIT) return text
+  return `${text.slice(0, USER_LOCATOR_PREVIEW_LIMIT - 1).trimEnd()}...`
+}
+
+function isSystemPromptText(text: string): boolean {
+  return text.trim().toLowerCase().startsWith('<system')
+}
+
+function getUserMessageText(content: UnifiedMessage['content']): string {
+  if (typeof content === 'string') return isSystemPromptText(content) ? '' : content
+  return content
+    .filter(
+      (block) =>
+        block.type === 'text' && typeof block.text === 'string' && !isSystemPromptText(block.text)
+    )
+    .map((block) => (block.type === 'text' ? block.text : ''))
+    .join('\n')
+}
+
+function countImageBlocks(content: UnifiedMessage['content']): number {
+  if (typeof content === 'string') return 0
+  return content.filter((block) => block.type === 'image' || block.type === 'image_error').length
+}
+
+function getLocatorMarkerTop(position: number): string {
+  const clampedPosition = Math.min(1, Math.max(0, position))
+  return `${6 + clampedPosition * 88}%`
+}
+
+function formatLocatorTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function parseLocatorContent(rawContent: string): UnifiedMessage['content'] {
+  try {
+    const parsed = JSON.parse(rawContent)
+    if (typeof parsed === 'string' || Array.isArray(parsed)) return parsed
+  } catch {
+    return rawContent
+  }
+  return ''
+}
+
+function parseLocatorMeta(rawMeta: string | null): UnifiedMessage['meta'] {
+  if (!rawMeta) return undefined
+  try {
+    return JSON.parse(rawMeta) as UnifiedMessage['meta']
+  } catch {
+    return undefined
+  }
+}
+
+function buildUserLocatorItem(
+  source: UserMessageLocatorSource,
+  index: number,
+  messageCount: number,
+  t: TFunction
+): UserMessageLocatorItem | null {
+  if (source.source === 'team' || source.meta?.compactSummary) return null
+
+  const textPreview = truncateLocatorPreview(
+    normalizeLocatorPreview(getUserMessageText(source.content))
+  )
+  const imageCount = countImageBlocks(source.content)
+  if (!textPreview && imageCount === 0) return null
+
+  const fallbackPreview =
+    imageCount > 0
+      ? t('messageList.userLocator.imageMessage', {
+          count: imageCount,
+          defaultValue: imageCount === 1 ? 'Image message' : '{{count}} images'
+        })
+      : t('messageList.userLocator.emptyMessage', {
+          defaultValue: 'Empty message'
+        })
+
+  return {
+    id: source.id,
+    index,
+    preview: textPreview || fallbackPreview,
+    time: formatLocatorTime(source.createdAt),
+    position: messageCount > 1 ? source.sortOrder / (messageCount - 1) : 0,
+    sortOrder: source.sortOrder
+  }
+}
+
+function UserMessageLocator({
+  items,
+  activeMessageId,
+  onJump
+}: {
+  items: UserMessageLocatorItem[]
+  activeMessageId?: string | null
+  onJump: (item: UserMessageLocatorItem) => void
+}): React.JSX.Element | null {
+  const { t } = useTranslation('chat')
+
+  if (items.length < 2) return null
+
+  return (
+    <div className="absolute right-1 top-1/2 z-20 hidden -translate-y-1/2 md:block">
+      <div className="group/user-locator relative flex h-[min(52vh,24rem)] items-center justify-end pl-7">
+        <div className="relative h-full w-1.5 rounded-full bg-muted-foreground/10 transition-all duration-200 group-hover/user-locator:w-2 group-hover/user-locator:bg-background/80 group-hover/user-locator:ring-1 group-hover/user-locator:ring-border/60">
+          {items.map((item) => {
+            const active = activeMessageId === item.id
+            return (
+              <button
+                key={item.id}
+                type="button"
+                aria-label={t('messageList.userLocator.jumpLabel', {
+                  index: item.index,
+                  preview: item.preview,
+                  defaultValue: 'Jump to user message {{index}}: {{preview}}'
+                })}
+                title={item.preview}
+                className={`absolute right-0 h-1.5 -translate-y-1/2 rounded-full transition-all duration-200 ${
+                  active
+                    ? 'w-3 bg-primary ring-1 ring-primary/25'
+                    : 'w-1.5 bg-muted-foreground/35 hover:w-3 hover:bg-primary/80'
+                }`}
+                style={{ top: getLocatorMarkerTop(item.position) }}
+                onClick={() => onJump(item)}
+              />
+            )
+          })}
+        </div>
+
+        <div className="pointer-events-none absolute right-3.5 top-1/2 w-[min(230px,calc(100vw-5rem))] -translate-y-1/2 translate-x-1.5 opacity-0 transition-all duration-200 group-hover/user-locator:pointer-events-auto group-hover/user-locator:translate-x-0 group-hover/user-locator:opacity-100">
+          <div className="overflow-hidden rounded-md border border-border/70 bg-popover/95 text-popover-foreground shadow-lg backdrop-blur-xl">
+            <div className="flex items-center gap-1.5 border-b border-border/60 px-2.5 py-1.5">
+              <MessagesSquare className="size-3 text-primary" />
+              <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                {t('messageList.userLocator.title', {
+                  defaultValue: 'User messages'
+                })}
+              </span>
+              <span className="text-[10px] tabular-nums text-muted-foreground/70">
+                {items.length}
+              </span>
+            </div>
+            <div className="max-h-[min(44vh,18rem)] overflow-y-auto p-1">
+              {items.map((item) => {
+                const active = activeMessageId === item.id
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`flex w-full items-start gap-1.5 rounded-md px-1.5 py-[5px] text-left transition-colors ${
+                      active
+                        ? 'bg-primary/10 text-foreground'
+                        : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                    }`}
+                    onClick={() => onJump(item)}
+                  >
+                    <span
+                      className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-sm text-[9px] tabular-nums ${
+                        active
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted text-muted-foreground'
+                      }`}
+                    >
+                      {item.index}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[11px] leading-4">{item.preview}</span>
+                      <span className="block text-[9px] leading-3 text-muted-foreground/65">
+                        {item.time}
+                      </span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const MessageRow = React.memo(function MessageRow({
   message,
   sessionId,
@@ -540,6 +771,7 @@ const MessageRow = React.memo(function MessageRow({
   orchestrationRun,
   hiddenToolUseIds,
   anchorMessageId,
+  highlightMessageId,
   requestRetryState,
   renderMode,
   onRetry,
@@ -548,12 +780,15 @@ const MessageRow = React.memo(function MessageRow({
   onDeleteMessage
 }: MessageRowProps): React.JSX.Element {
   const isAnchor = anchorMessageId === message.id
+  const isHighlighted = highlightMessageId === message.id
 
   return (
     <div
       data-message-id={message.id}
       data-anchor={isAnchor ? 'true' : undefined}
-      className={`${MESSAGE_COLUMN_CLASS} pb-7`}
+      className={`${MESSAGE_COLUMN_CLASS} pb-7 transition-colors duration-500 ${
+        isHighlighted ? 'rounded-md bg-primary/5 ring-1 ring-primary/20' : ''
+      }`}
     >
       <MessageItem
         message={message}
@@ -674,11 +909,24 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     anchorTop: number | null
   } | null>(null)
   const scheduledScrollFrameRef = React.useRef<number | null>(null)
+  const highlightedMessageTimerRef = React.useRef<number | null>(null)
   const isAutoLoadingOlderRef = React.useRef(false)
   const lastScrollOffsetRef = React.useRef(0)
   const programmaticScrollUntilRef = React.useRef(0)
   const wasSessionOutputtingRef = React.useRef(isSessionOutputting)
   const [isAtBottom, setIsAtBottom] = React.useState(true)
+  const [activeUserLocatorMessageId, setActiveUserLocatorMessageId] = React.useState<string | null>(
+    null
+  )
+  const [highlightedMessageId, setHighlightedMessageId] = React.useState<string | null>(null)
+  const [userLocatorSnapshot, setUserLocatorSnapshot] = React.useState<{
+    sessionId: string | null
+    rows: UserMessageIndexRow[]
+  }>({ sessionId: null, rows: EMPTY_USER_LOCATOR_ROWS })
+  const userLocatorRows =
+    userLocatorSnapshot.sessionId === activeSessionId
+      ? userLocatorSnapshot.rows
+      : EMPTY_USER_LOCATOR_ROWS
 
   const orchestrationState = React.useMemo(
     () =>
@@ -735,6 +983,78 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     [continueAssistantMessageId, streamingMessageId, transcriptAnalysis]
   )
 
+  const userLocatorItems = React.useMemo<UserMessageLocatorItem[]>(() => {
+    const sourcesById = new Map<string, UserMessageLocatorSource>()
+
+    for (const row of userLocatorRows) {
+      if (row.role !== 'user') continue
+      sourcesById.set(row.id, {
+        id: row.id,
+        content: parseLocatorContent(row.content),
+        meta: parseLocatorMeta(row.meta),
+        createdAt: row.created_at,
+        sortOrder: row.sort_order
+      })
+    }
+
+    messages.forEach((message, messageIndex) => {
+      if (message.role !== 'user') return
+      const existing = sourcesById.get(message.id)
+      sourcesById.set(message.id, {
+        id: message.id,
+        content: message.content,
+        meta: message.meta,
+        createdAt: message.createdAt,
+        sortOrder: existing?.sortOrder ?? loadedRangeStart + messageIndex,
+        source: message.source
+      })
+    })
+
+    let visibleIndex = 0
+    return [...sourcesById.values()]
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .flatMap((source) => {
+        const item = buildUserLocatorItem(source, visibleIndex + 1, activeSessionMessageCount, t)
+        if (!item) return []
+        visibleIndex += 1
+        return [item]
+      })
+  }, [activeSessionMessageCount, loadedRangeStart, messages, t, userLocatorRows])
+
+  React.useEffect(() => {
+    let cancelled = false
+
+    if (!activeSessionId) {
+      setUserLocatorSnapshot({ sessionId: null, rows: EMPTY_USER_LOCATOR_ROWS })
+      return
+    }
+
+    const loadUserLocatorRows = async (): Promise<void> => {
+      try {
+        const rows = (await ipcClient.invoke('db:messages:list-user', activeSessionId)) as
+          | UserMessageIndexRow[]
+          | null
+        if (!cancelled) {
+          setUserLocatorSnapshot({
+            sessionId: activeSessionId,
+            rows: Array.isArray(rows) ? rows : EMPTY_USER_LOCATOR_ROWS
+          })
+        }
+      } catch (err) {
+        console.error('[MessageList] Failed to load user message locator rows:', err)
+        if (!cancelled) {
+          setUserLocatorSnapshot({ sessionId: activeSessionId, rows: EMPTY_USER_LOCATOR_ROWS })
+        }
+      }
+    }
+
+    void loadUserLocatorRows()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeSessionId, activeSessionMessageCount])
+
   const olderUnloadedMessageCount = Math.max(0, loadedRangeStart)
   const hasLoadMoreRow = olderUnloadedMessageCount > 0
   const rows = React.useMemo(() => {
@@ -755,6 +1075,10 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
   )
 
   const lastMessageRowIndex = rows.length - 1
+  const userLocatorItemById = React.useMemo(
+    () => new Map(userLocatorItems.map((item) => [item.id, item])),
+    [userLocatorItems]
+  )
 
   const canAutoScroll = React.useCallback(() => {
     const mode = autoScrollModeRef.current
@@ -803,6 +1127,103 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
 
     setIsAtBottom((prev) => (prev === nextAtBottom ? prev : nextAtBottom))
   }, [isSessionOutputting])
+
+  const syncActiveUserLocator = React.useCallback(() => {
+    const ref = listRef.current
+    if (!ref || userLocatorItems.length === 0) {
+      setActiveUserLocatorMessageId((prev) => (prev === null ? prev : null))
+      return
+    }
+
+    const containerTop = ref.getBoundingClientRect().top
+    let nearestVisibleId: string | null = null
+    let nearestVisibleDistance = Number.POSITIVE_INFINITY
+
+    for (const element of ref.querySelectorAll<HTMLElement>('[data-message-id]')) {
+      const messageId = element.dataset.messageId
+      if (!messageId || !userLocatorItemById.has(messageId)) continue
+
+      const distance = Math.abs(element.getBoundingClientRect().top - containerTop)
+      if (distance < nearestVisibleDistance) {
+        nearestVisibleDistance = distance
+        nearestVisibleId = messageId
+      }
+    }
+
+    if (nearestVisibleId) {
+      setActiveUserLocatorMessageId((prev) => (prev === nearestVisibleId ? prev : nearestVisibleId))
+      return
+    }
+
+    const scrollableDistance = Math.max(1, ref.scrollHeight - ref.clientHeight)
+    const scrollProgress = Math.min(1, Math.max(0, ref.scrollTop / scrollableDistance))
+    let nextActiveId = userLocatorItems[0]?.id ?? null
+    let nearestDistance = Number.POSITIVE_INFINITY
+
+    for (const item of userLocatorItems) {
+      const distance = Math.abs(item.position - scrollProgress)
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nextActiveId = item.id
+      }
+    }
+
+    setActiveUserLocatorMessageId((prev) => (prev === nextActiveId ? prev : nextActiveId))
+  }, [userLocatorItemById, userLocatorItems])
+
+  const handleJumpToUserMessage = React.useCallback(
+    async (item: UserMessageLocatorItem): Promise<void> => {
+      const messageId = item.id
+      const scrollToTarget = (): boolean => {
+        const ref = listRef.current
+        if (!ref) return false
+
+        const target = Array.from(ref.querySelectorAll<HTMLElement>('[data-message-id]')).find(
+          (element) => element.dataset.messageId === messageId
+        )
+        if (!target) return false
+
+        autoScrollModeRef.current = 'off'
+        markProgrammaticScroll()
+        setActiveUserLocatorMessageId(messageId)
+        setHighlightedMessageId(messageId)
+        ref.scrollTo({
+          top: Math.max(0, target.offsetTop - USER_LOCATOR_SCROLL_OFFSET),
+          behavior: 'smooth'
+        })
+
+        if (highlightedMessageTimerRef.current !== null) {
+          window.clearTimeout(highlightedMessageTimerRef.current)
+        }
+        highlightedMessageTimerRef.current = window.setTimeout(() => {
+          setHighlightedMessageId((prev) => (prev === messageId ? null : prev))
+          highlightedMessageTimerRef.current = null
+        }, USER_LOCATOR_HIGHLIGHT_MS)
+
+        return true
+      }
+
+      if (scrollToTarget()) return
+      if (!activeSessionId) return
+
+      const maxOffset = Math.max(0, activeSessionMessageCount - USER_LOCATOR_WINDOW_LOAD_SIZE)
+      const preferredOffset = item.sortOrder - Math.floor(USER_LOCATOR_WINDOW_LOAD_SIZE * 0.35)
+      const offset = Math.min(maxOffset, Math.max(0, preferredOffset))
+
+      await useChatStore
+        .getState()
+        .loadWindowSessionMessages(activeSessionId, offset, USER_LOCATOR_WINDOW_LOAD_SIZE)
+
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => resolve())
+        })
+      })
+
+      scrollToTarget()
+    },
+    [activeSessionId, activeSessionMessageCount, markProgrammaticScroll]
+  )
 
   const requestScrollToBottom = React.useCallback(
     ({
@@ -853,7 +1274,12 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [canAutoScroll, canSessionTriggerStreamingAutoScroll, pendingAskUserQuestion, requestScrollToBottom])
+  }, [
+    canAutoScroll,
+    canSessionTriggerStreamingAutoScroll,
+    pendingAskUserQuestion,
+    requestScrollToBottom
+  ])
 
   const loadOlderMessages = React.useCallback(async (): Promise<void> => {
     if (!activeSessionId || olderUnloadedMessageCount === 0 || isAutoLoadingOlderRef.current) return
@@ -880,12 +1306,13 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
 
   const handleListScroll = React.useCallback(() => {
     syncBottomState()
+    syncActiveUserLocator()
     const ref = listRef.current
     if (!ref) return
     if (olderUnloadedMessageCount === 0 || isAutoLoadingOlderRef.current) return
     if (ref.scrollTop > AUTO_LOAD_OLDER_TOP_THRESHOLD) return
     void loadOlderMessages()
-  }, [loadOlderMessages, olderUnloadedMessageCount, syncBottomState])
+  }, [loadOlderMessages, olderUnloadedMessageCount, syncActiveUserLocator, syncBottomState])
 
   React.useEffect(() => {
     if (!activeSessionId) return
@@ -992,9 +1419,16 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
   }, [canAutoScroll, pendingAskUserQuestion, requestScrollToBottom, rows.length])
 
   React.useEffect(() => {
+    syncActiveUserLocator()
+  }, [syncActiveUserLocator])
+
+  React.useEffect(() => {
     return () => {
       if (scheduledScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(scheduledScrollFrameRef.current)
+      }
+      if (highlightedMessageTimerRef.current !== null) {
+        window.clearTimeout(highlightedMessageTimerRef.current)
       }
     }
   }, [])
@@ -1129,6 +1563,7 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
                   orchestrationState.byMessageId.get(row.messageId)?.hiddenToolUseIds
                 }
                 anchorMessageId={null}
+                highlightMessageId={null}
                 requestRetryState={
                   row.isLastAssistantMessage ? (sessionRequestRetryState ?? null) : null
                 }
@@ -1144,7 +1579,7 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     )
   }
 
-  return (
+  const messageListContent = (
     <div ref={containerRef} className="relative flex-1" data-message-list>
       <div
         ref={listRef}
@@ -1194,6 +1629,7 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
                   orchestrationRun={null}
                   hiddenToolUseIds={undefined}
                   anchorMessageId={anchorMessageId}
+                  highlightMessageId={highlightedMessageId}
                   requestRetryState={sessionRequestRetryState ?? null}
                   onRetry={onRetry}
                   onContinue={onContinue}
@@ -1224,6 +1660,7 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
                 orchestrationRun={orchestrationState.byMessageId.get(messageId)?.primaryRun ?? null}
                 hiddenToolUseIds={orchestrationState.byMessageId.get(messageId)?.hiddenToolUseIds}
                 anchorMessageId={anchorMessageId}
+                highlightMessageId={highlightedMessageId}
                 renderMode={rowRenderMode}
                 requestRetryState={
                   isLastAssistantMessage ? (sessionRequestRetryState ?? null) : null
@@ -1238,6 +1675,12 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
         })()}
       </div>
 
+      <UserMessageLocator
+        items={userLocatorItems}
+        activeMessageId={activeUserLocatorMessageId}
+        onJump={handleJumpToUserMessage}
+      />
+
       {!isAtBottom && messages.length > 0 && (
         <button
           onClick={scrollToBottom}
@@ -1248,6 +1691,19 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
         </button>
       )}
     </div>
+  )
+
+  return isStreamingPerfEnabled() ? (
+    <React.Profiler
+      id="MessageList"
+      onRender={(_id, phase, actualDuration, baseDuration) => {
+        recordStreamingReactCommit(actualDuration, { phase, baseDuration })
+      }}
+    >
+      {messageListContent}
+    </React.Profiler>
+  ) : (
+    messageListContent
   )
 }
 

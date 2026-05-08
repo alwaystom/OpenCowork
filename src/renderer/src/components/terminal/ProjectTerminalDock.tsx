@@ -172,6 +172,7 @@ export function ProjectTerminalDock({
     ? (sshConnections.find((connection) => connection.id === sshConnectionId) ?? null)
     : null
   const ensureContextKeyRef = useRef<string | null>(null)
+  const hasManuallyCreatedTerminalRef = useRef(false)
 
   const activateLocalTab = useCallback(
     (tabId: string | null): void => {
@@ -192,7 +193,14 @@ export function ProjectTerminalDock({
   const focusContextTerminal = useCallback(async (): Promise<void> => {
     if (!sshConnectionId && !workingFolder) return
 
-    setIsEnsuringTerminal(true)
+    const hasExistingContextTerminal = sshConnectionId
+      ? sshOpenTabs.some((tab) => tab.type === 'terminal' && tab.connectionId === sshConnectionId)
+      : localTabs.some((tab) => tab.cwd === workingFolder)
+
+    if (!hasExistingContextTerminal) {
+      setIsEnsuringTerminal(true)
+    }
+
     try {
       await ensureProjectTerminalReady({
         projectName,
@@ -200,16 +208,18 @@ export function ProjectTerminalDock({
         sshConnectionId
       })
     } finally {
-      setIsEnsuringTerminal(false)
+      if (!hasExistingContextTerminal) {
+        setIsEnsuringTerminal(false)
+      }
     }
-  }, [projectName, sshConnectionId, workingFolder])
+  }, [localTabs, projectName, sshConnectionId, sshOpenTabs, workingFolder])
 
   useEffect(() => {
     if (sshConnectionId && !sshLoaded) return
     if (!sshConnectionId && !workingFolder) return
 
     const contextKey = `${projectId}:${sshConnectionId ?? ''}:${workingFolder ?? ''}`
-    if (ensureContextKeyRef.current === contextKey) return
+    if (ensureContextKeyRef.current === contextKey || hasManuallyCreatedTerminalRef.current) return
 
     ensureContextKeyRef.current = contextKey
     void focusContextTerminal()
@@ -222,6 +232,8 @@ export function ProjectTerminalDock({
 
   const handleCreateTerminal = useCallback(
     (initialCommand?: string): void => {
+      hasManuallyCreatedTerminalRef.current = true
+
       if (sshConnectionId) {
         activateLocalTab(null)
         void (async () => {

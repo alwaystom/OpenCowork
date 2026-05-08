@@ -729,7 +729,7 @@ This file provides guidance to the AI assistant when working with code in this r
 [High-level code architecture and structure — the "big picture" that requires reading multiple files to understand. Focus on entry points, data flow, key patterns, and module responsibilities.]
 
 ## Conventions
-[Project-specific conventions: naming, file organization, import patterns, error handling, etc. Only include things that are NOT obvious from the code.]
+[Project-specific conventions: naming, file organization, import patterns, error handling, and code comment expectations. Comments should explain intent, invariants, boundaries, side effects, or non-obvious behavior rather than restating straightforward code. Only include things that are NOT obvious from the code.]
 
 ## Custom Instructions
 [Preserve any existing custom instructions from the user, or leave a placeholder for them to fill in.]

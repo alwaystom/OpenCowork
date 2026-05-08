@@ -875,7 +875,10 @@ interface AgentStore {
   resetLiveSessionExecution: (sessionId: string) => void
   addToolCall: (tc: ToolCallState, sessionId?: string | null) => void
   updateToolCall: (id: string, patch: Partial<ToolCallState>, sessionId?: string | null) => void
-  refreshRunChanges: (runId: string) => Promise<void>
+  refreshRunChanges: (
+    runId: string,
+    query?: { sessionId?: string; toolUseIds?: string[] }
+  ) => Promise<void>
   acceptRunChanges: (runId: string) => Promise<{ error?: string }>
   acceptFileChange: (runId: string, changeId: string) => Promise<{ error?: string }>
   rollbackRunChanges: (runId: string) => Promise<{ error?: string }>
@@ -1357,14 +1360,16 @@ export const useAgentStore = create<AgentStore>()(
         })
       },
 
-      refreshRunChanges: async (runId) => {
+      refreshRunChanges: async (runId, query) => {
         if (!runId) return
         try {
-          const result = await ipcClient.invoke(IPC.AGENT_CHANGES_LIST, { runId })
+          const result = await ipcClient.invoke(IPC.AGENT_CHANGES_LIST, { runId, ...query })
           if (isAgentChangeError(result)) return
           set((state) => {
             if (result && typeof result === 'object' && 'runId' in result) {
-              state.runChangesByRunId[runId] = result as AgentRunChangeSet
+              const changeSet = result as AgentRunChangeSet
+              state.runChangesByRunId[changeSet.runId] = changeSet
+              state.runChangesByRunId[runId] = changeSet
               trimRunChangesMap(state.runChangesByRunId)
             } else {
               delete state.runChangesByRunId[runId]

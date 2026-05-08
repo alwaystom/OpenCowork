@@ -40,7 +40,7 @@ import { ImagePluginToolCard } from './ImagePluginToolCard'
 import { DesktopActionToolCard } from './DesktopActionToolCard'
 import { useChatStore } from '@renderer/stores/chat-store'
 import { useAgentStore } from '@renderer/stores/agent-store'
-import type { AgentRunFileChange } from '@renderer/stores/agent-store'
+import type { AgentRunChangeSet, AgentRunFileChange } from '@renderer/stores/agent-store'
 import { useShallow } from 'zustand/react/shallow'
 import type {
   ContentBlock,
@@ -75,6 +75,7 @@ import { useMemoizedTokens } from '@renderer/hooks/use-estimated-tokens'
 import { getLastDebugInfo, getRequestTraceInfo } from '@renderer/lib/debug-store'
 import { MONO_FONT } from '@renderer/lib/constants'
 import {
+  getLiveOutputComponentClass,
   getLiveOutputCursorClass,
   getLiveOutputDotClass,
   getLiveOutputSurfaceClass
@@ -103,6 +104,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useTranslateStore } from '@renderer/stores/translate-store'
 import { useUIStore } from '@renderer/stores/ui-store'
+import { useStreamingRenderPool } from '@renderer/hooks/use-typewriter'
 import {
   openMarkdownHref,
   resolveLocalFilePath,
@@ -272,6 +274,22 @@ function summarizeWorkspaceTools(
     return 'create'
   }
 
+  const isFailedFileTool = (block: Extract<ContentBlock, { type: 'tool_use' }>): boolean => {
+    const liveToolCall = options.liveToolCallMap?.get(block.id)
+    if (liveToolCall?.status === 'error' || liveToolCall?.error) return true
+
+    const result = options.toolResults?.get(block.id)
+    if (result?.isError) return true
+
+    const outputText = toolResultText(liveToolCall?.output ?? result?.content)
+    if (!outputText) return false
+
+    const decoded = decodeStructuredToolResult(outputText)
+    if (!isRecord(decoded) || typeof decoded.error !== 'string') return false
+
+    return decoded.success === false || Object.keys(decoded).length === 1
+  }
+
   for (const change of options.aggregatedChanges ?? []) {
     if (change.op === 'create') {
       createdPaths.add(change.filePath)
@@ -286,6 +304,10 @@ function summarizeWorkspaceTools(
 
     const filePath = block.input.file_path ?? block.input.path
     if (typeof filePath !== 'string' || !filePath.trim()) continue
+
+    if (['Write', 'Edit', 'Delete'].includes(block.name) && isFailedFileTool(block)) {
+      continue
+    }
 
     if (block.name === 'Delete') {
       deletedPaths.add(filePath)
@@ -927,6 +949,7 @@ function StreamingMarkdownContent({
   isStreaming: boolean
 }): React.JSX.Element {
   const liveOutputAnimationStyle = useSettingsStore((s) => s.liveOutputAnimationStyle)
+  const renderPool = useStreamingRenderPool(text, isStreaming, liveOutputAnimationStyle)
   const handleMarkstreamClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const link = (event.target as HTMLElement | null)?.closest('a[href]')
     const href = link?.getAttribute('href')
@@ -944,17 +967,20 @@ function StreamingMarkdownContent({
   // so we can still show markdown structure before the stream is complete.
   if (isStreaming) {
     return (
-      <div className={`${getLiveOutputSurfaceClass(liveOutputAnimationStyle)} ${MARKSTREAM_CLASS}`}>
+      <div
+        className={`${getLiveOutputSurfaceClass(liveOutputAnimationStyle)} ${MARKSTREAM_CLASS}`}
+        data-render-pool-size={renderPool.poolSize}
+        data-rendered-length={renderPool.renderedLength}
+        data-target-length={renderPool.targetLength}
+      >
         <MarkstreamRenderer
-          content={text}
+          content={renderPool.text}
           final={false}
           isDark={document.documentElement.classList.contains('dark')}
           indexKey="assistant-message-stream"
           renderCodeBlocksAsPre
           codeBlockStream
           typewriter
-          viewportPriority
-          deferNodesUntilVisible
           codeBlockProps={{
             showFontSizeButtons: false,
             enableFontSizeControl: false,
@@ -1065,6 +1091,53 @@ function normalizeStructuredBlocks(blocks: ContentBlock[]): ContentBlock[] {
   return normalized
 }
 
+function resolveRunChangeSetForMessage(
+  changesByRunId: Record<string, AgentRunChangeSet>,
+  msgId?: string,
+  sessionId?: string | null,
+  toolUseIds: readonly string[] = []
+): AgentRunChangeSet | undefined {
+  if (!msgId) return undefined
+
+  const exact = changesByRunId[msgId]
+  if (exact) return exact
+
+  const uniqueChangeSets = new Map<string, AgentRunChangeSet>()
+  for (const changeSet of Object.values(changesByRunId)) {
+    uniqueChangeSets.set(changeSet.runId, changeSet)
+  }
+
+  for (const changeSet of uniqueChangeSets.values()) {
+    if (changeSet.assistantMessageId === msgId) return changeSet
+  }
+
+  const toolUseIdSet = new Set(toolUseIds)
+  if (toolUseIdSet.size === 0) return undefined
+
+  let bestMatch: { changeSet: AgentRunChangeSet; matchCount: number } | null = null
+  for (const changeSet of uniqueChangeSets.values()) {
+    if (sessionId && changeSet.sessionId !== sessionId) continue
+
+    let matchCount = 0
+    for (const change of changeSet.changes) {
+      if (change.toolUseId && toolUseIdSet.has(change.toolUseId)) {
+        matchCount += 1
+      }
+    }
+    if (matchCount === 0) continue
+
+    if (
+      !bestMatch ||
+      matchCount > bestMatch.matchCount ||
+      (matchCount === bestMatch.matchCount && changeSet.updatedAt > bestMatch.changeSet.updatedAt)
+    ) {
+      bestMatch = { changeSet, matchCount }
+    }
+  }
+
+  return bestMatch?.changeSet
+}
+
 export function AssistantMessage({
   content,
   isStreaming,
@@ -1088,6 +1161,13 @@ export function AssistantMessage({
   const { t } = useTranslation('chat')
   const devMode = useSettingsStore((s) => s.devMode)
   const liveOutputAnimationStyle = useSettingsStore((s) => s.liveOutputAnimationStyle)
+  const liveComponentClassName = isStreaming
+    ? getLiveOutputComponentClass(liveOutputAnimationStyle)
+    : ''
+  const liveScaleInClassName = liveComponentClassName
+    ? `w-full origin-left ${liveComponentClassName}`
+    : 'w-full origin-left'
+  const liveFadeInClassName = liveComponentClassName ? `w-full ${liveComponentClassName}` : 'w-full'
   const debugInfo = devMode ? (requestDebugInfo ?? (msgId ? getLastDebugInfo(msgId) : undefined)) : undefined
   const openTranslatePage = useUIStore((s) => s.openTranslatePage)
   const setTranslateSourceText = useTranslateStore((s) => s.setSourceText)
@@ -1149,15 +1229,6 @@ export function AssistantMessage({
   const generatingImagePreview = useChatStore((s) =>
     isLiveMode && msgId ? s.generatingImagePreviews[msgId] : undefined
   )
-  const runChangeSet = useAgentStore((s) =>
-    isLiveMode && msgId ? s.runChangesByRunId[msgId] : undefined
-  )
-  const visibleRunChanges = useMemo(
-    () => (runChangeSet ? aggregateDisplayableRunFileChanges(runChangeSet.changes) : []),
-    [runChangeSet]
-  )
-  const visibleRunChangeCount = visibleRunChanges.length
-  const refreshRunChanges = useAgentStore((s) => s.refreshRunChanges)
 
   const stringSegments = useMemo(
     () => (typeof content === 'string' ? parseThinkTags(content) : null),
@@ -1167,14 +1238,35 @@ export function AssistantMessage({
     () => (Array.isArray(content) ? normalizeStructuredBlocks(content) : null),
     [content]
   )
-  const liveToolCallIds = useMemo(() => {
-    if (!isStreaming || !normalizedContent) return []
+  const messageToolUseIds = useMemo(() => {
+    if (!normalizedContent) return []
     return normalizedContent
       .filter(
         (block): block is Extract<ContentBlock, { type: 'tool_use' }> => block.type === 'tool_use'
       )
       .map((block) => block.id)
-  }, [isStreaming, normalizedContent])
+  }, [normalizedContent])
+  const runChangeSet = useAgentStore((s) =>
+    isLiveMode
+      ? resolveRunChangeSetForMessage(
+          s.runChangesByRunId,
+          msgId,
+          sessionId,
+          messageToolUseIds
+        )
+      : undefined
+  )
+  const visibleRunChanges = useMemo(
+    () => (runChangeSet ? aggregateDisplayableRunFileChanges(runChangeSet.changes) : []),
+    [runChangeSet]
+  )
+  const visibleRunChangeCount = visibleRunChanges.length
+  const refreshRunChanges = useAgentStore((s) => s.refreshRunChanges)
+
+  const liveToolCallIds = useMemo(() => {
+    if (!isStreaming) return []
+    return messageToolUseIds
+  }, [isStreaming, messageToolUseIds])
   const liveToolCalls = useAgentStore(
     useShallow((s) => {
       if (!isLiveMode || liveToolCallMap || !isStreaming || liveToolCallIds.length === 0) {
@@ -1262,8 +1354,11 @@ export function AssistantMessage({
   }, [isStreaming, normalizedContent])
   useEffect(() => {
     if (!isLiveMode || !msgId || isStreaming) return
-    void refreshRunChanges(msgId)
-  }, [isLiveMode, isStreaming, msgId, refreshRunChanges])
+    void refreshRunChanges(msgId, {
+      ...(sessionId ? { sessionId } : {}),
+      ...(messageToolUseIds.length > 0 ? { toolUseIds: messageToolUseIds } : {})
+    })
+  }, [isLiveMode, isStreaming, messageToolUseIds, msgId, refreshRunChanges, sessionId])
 
   const renderItems = useMemo(() => {
     if (!normalizedContent) return []
@@ -1307,21 +1402,25 @@ export function AssistantMessage({
 
     if (shouldShowImageGeneratingLoader && hasEmptyContent) {
       return (
-        <ImageGeneratingLoader
-          previewSrc={generatingImagePreviewSrc || undefined}
-          previewFilePath={generatingImagePreview?.source.filePath}
-          startedAt={imageGenerationTiming?.startedAt}
-        />
+        <div className={liveComponentClassName || undefined}>
+          <ImageGeneratingLoader
+            previewSrc={generatingImagePreviewSrc || undefined}
+            previewFilePath={generatingImagePreview?.source.filePath}
+            startedAt={imageGenerationTiming?.startedAt}
+          />
+        </div>
       )
     }
 
     if (generatingImagePreviewSrc && hasEmptyContent) {
       return (
-        <ImagePreview
-          src={generatingImagePreviewSrc}
-          alt="Generated image preview"
-          filePath={generatingImagePreview?.source.filePath}
-        />
+        <div className={liveComponentClassName || undefined}>
+          <ImagePreview
+            src={generatingImagePreviewSrc}
+            alt="Generated image preview"
+            filePath={generatingImagePreview?.source.filePath}
+          />
+        </div>
       )
     }
 
@@ -1418,7 +1517,7 @@ export function AssistantMessage({
         const result = toolResults?.get(block.id)
         const liveTc = effectiveLiveToolCallMap?.get(block.id)
         return (
-          <ScaleIn key={key} className="w-full origin-left">
+          <ScaleIn key={key} className={liveScaleInClassName}>
             <AskUserQuestionCard
               toolUseId={block.id}
               input={block.input}
@@ -1442,7 +1541,7 @@ export function AssistantMessage({
         const result = toolResults?.get(block.id)
         const liveTc = effectiveLiveToolCallMap?.get(block.id)
         return (
-          <ScaleIn key={key} className="w-full origin-left">
+          <ScaleIn key={key} className={liveScaleInClassName}>
             <PlanReviewCard
               output={liveTc?.output ?? result?.content}
               status={
@@ -1465,7 +1564,7 @@ export function AssistantMessage({
         const result = toolResults?.get(block.id)
         const liveTc = effectiveLiveToolCallMap?.get(block.id)
         return (
-          <ScaleIn key={key} className="w-full origin-left">
+          <ScaleIn key={key} className={liveScaleInClassName}>
             <WidgetOutputBlock
               input={liveTc?.input ?? block.input}
               status={
@@ -1485,7 +1584,7 @@ export function AssistantMessage({
       if (TEAM_TOOL_NAMES.has(block.name)) {
         const result = toolResults?.get(block.id)
         return (
-          <FadeIn key={key} className="w-full">
+          <FadeIn key={key} className={liveFadeInClassName}>
             <TeamEventCard name={block.name} input={block.input} output={result?.content} />
           </FadeIn>
         )
@@ -1494,7 +1593,7 @@ export function AssistantMessage({
         if (block.input.run_in_background) {
           const result = toolResults?.get(block.id)
           return (
-            <FadeIn key={key} className="w-full">
+            <FadeIn key={key} className={liveFadeInClassName}>
               <TeamEventCard name={block.name} input={block.input} output={result?.content} />
             </FadeIn>
           )
@@ -1502,13 +1601,13 @@ export function AssistantMessage({
         const result = toolResults?.get(block.id)
         if (orchestrationRun) {
           return blockIndex === orchestrationAnchorIndex ? (
-            <FadeIn key={key} className="w-full">
+            <FadeIn key={key} className={liveFadeInClassName}>
               <OrchestrationBlock run={orchestrationRun} />
             </FadeIn>
           ) : null
         }
         return (
-          <ScaleIn key={key} className="w-full origin-left">
+          <ScaleIn key={key} className={liveScaleInClassName}>
             <SubAgentCard
               name={block.name}
               toolUseId={block.id}
@@ -1525,7 +1624,7 @@ export function AssistantMessage({
         const liveTc = effectiveLiveToolCallMap?.get(block.id)
         const statusValue = resolveToolCallStatus(isStreaming, liveTc, result)
         return (
-          <ScaleIn key={key} className="w-full origin-left">
+          <ScaleIn key={key} className={liveScaleInClassName}>
             <FileChangeCard
               name={block.name}
               input={block.input}
@@ -1544,7 +1643,7 @@ export function AssistantMessage({
         const liveTc = effectiveLiveToolCallMap?.get(block.id)
         const statusValue = resolveToolCallStatus(isStreaming, liveTc, result)
         return (
-          <ScaleIn key={key} className="w-full origin-left">
+          <ScaleIn key={key} className={liveScaleInClassName}>
             <ImagePluginToolCard
               toolUseId={block.id}
               input={liveTc?.input ?? block.input}
@@ -1567,7 +1666,7 @@ export function AssistantMessage({
         const liveTc = effectiveLiveToolCallMap?.get(block.id)
         const statusValue = resolveToolCallStatus(isStreaming, liveTc, result)
         return (
-          <ScaleIn key={key} className="w-full origin-left">
+          <ScaleIn key={key} className={liveScaleInClassName}>
             <DesktopActionToolCard
               name={block.name}
               input={block.input}
@@ -1586,7 +1685,7 @@ export function AssistantMessage({
         liveToolCallMap: effectiveLiveToolCallMap
       })
       return (
-        <ScaleIn key={key} className="w-full origin-left">
+        <ScaleIn key={key} className={liveScaleInClassName}>
           <ToolCallCard
             toolUseId={toolCallState.toolUseId}
             name={toolCallState.name}
@@ -1653,7 +1752,7 @@ export function AssistantMessage({
                     <div key={item.index} className={MARKDOWN_WRAPPER_CLASS}>
                       <StreamingMarkdownContent
                         text={visibleText}
-                        isStreaming={item.index === lastStructuredTextIdx}
+                        isStreaming={!!isStreaming && item.index === lastStructuredTextIdx}
                       />
                     </div>
                   )
@@ -1666,7 +1765,7 @@ export function AssistantMessage({
                     <div key={item.index} className={MARKDOWN_WRAPPER_CLASS}>
                       <StreamingMarkdownContent
                         text={block.text}
-                        isStreaming={item.index === lastStructuredTextIdx}
+                        isStreaming={!!isStreaming && item.index === lastStructuredTextIdx}
                       />
                     </div>
                   )
@@ -1740,7 +1839,7 @@ export function AssistantMessage({
                       ]
                     : undefined
                 return (
-                  <ScaleIn key={item.index} className="w-full origin-left">
+                  <ScaleIn key={item.index} className={liveScaleInClassName}>
                     <ImagePreview
                       src={imgSrc}
                       alt="Generated image"
@@ -1753,7 +1852,7 @@ export function AssistantMessage({
               case 'image_error': {
                 const imageError = block as Extract<ContentBlock, { type: 'image_error' }>
                 return (
-                  <ScaleIn key={item.index} className="w-full origin-left">
+                  <ScaleIn key={item.index} className={liveScaleInClassName}>
                     <ImageGenerationErrorCard code={imageError.code} message={imageError.message} />
                   </ScaleIn>
                 )
@@ -1761,7 +1860,7 @@ export function AssistantMessage({
               case 'agent_error': {
                 const agentError = block as Extract<ContentBlock, { type: 'agent_error' }>
                 return (
-                  <ScaleIn key={item.index} className="w-full origin-left">
+                  <ScaleIn key={item.index} className={liveScaleInClassName}>
                     <AgentErrorCard
                       code={agentError.code}
                       message={agentError.message}
@@ -1794,7 +1893,7 @@ export function AssistantMessage({
           )
           const groupKey = groupBlocks[0]?.id ?? `group-${item.indices[0]}`
           return (
-            <ScaleIn key={groupKey} className="w-full origin-left">
+            <ScaleIn key={groupKey} className={liveScaleInClassName}>
               <ToolCallGroup
                 toolName={item.toolName}
                 items={groupToolCalls}
@@ -1821,7 +1920,7 @@ export function AssistantMessage({
         })}
         {isStreaming && <span className={getLiveOutputCursorClass(liveOutputAnimationStyle)} />}
         {shouldShowImageGeneratingLoader && (
-          <div className="pt-3">
+          <div className={`pt-3${liveComponentClassName ? ` ${liveComponentClassName}` : ''}`}>
             <ImageGeneratingLoader
               previewSrc={generatingImagePreviewSrc || undefined}
               previewFilePath={generatingImagePreview?.source.filePath}

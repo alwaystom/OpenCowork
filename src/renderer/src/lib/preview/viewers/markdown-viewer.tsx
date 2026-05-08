@@ -9,10 +9,24 @@ export function MarkdownViewer({
   filePath,
   content,
   viewMode,
-  onContentChange
+  onContentChange,
+  onSave,
+  initialLine,
+  initialColumn,
+  initialPositionKey
 }: ViewerProps): React.JSX.Element {
   if (viewMode === 'code') {
-    return <CodeEditor filePath={filePath} content={content} onChange={onContentChange} />
+    return (
+      <CodeEditor
+        filePath={filePath}
+        content={content}
+        onChange={onContentChange}
+        onSave={onSave}
+        initialLine={initialLine}
+        initialColumn={initialColumn}
+        initialPositionKey={initialPositionKey}
+      />
+    )
   }
 
   return (

@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Image, MonitorSmartphone, Puzzle } from 'lucide-react'
+import { Globe, Image, MonitorSmartphone, Puzzle, Trash2 } from 'lucide-react'
 import { Switch } from '@renderer/components/ui/switch'
+import { Button } from '@renderer/components/ui/button'
+import { Textarea } from '@renderer/components/ui/textarea'
 import {
   Select,
   SelectContent,
@@ -17,20 +19,50 @@ import {
 } from '@renderer/stores/provider-store'
 import { useChatStore } from '@renderer/stores/chat-store'
 import { useAppPluginStore } from '@renderer/stores/app-plugin-store'
+import { toast } from 'sonner'
+import { ipcClient } from '@renderer/lib/ipc/ipc-client'
+import { IPC } from '@renderer/lib/ipc/channels'
+import { parseBrowserDomainList } from '@renderer/lib/app-plugin/browser-access'
 import {
   APP_PLUGIN_DESCRIPTORS,
+  BROWSER_CLICK_TOOL_NAME,
+  BROWSER_GET_CONTENT_TOOL_NAME,
+  BROWSER_NAVIGATE_TOOL_NAME,
+  BROWSER_PLUGIN_ID,
+  BROWSER_SCREENSHOT_TOOL_NAME,
+  BROWSER_SCROLL_TOOL_NAME,
+  BROWSER_SNAPSHOT_TOOL_NAME,
+  BROWSER_TYPE_TOOL_NAME,
   DESKTOP_CLICK_TOOL_NAME,
   DESKTOP_CONTROL_PLUGIN_ID,
   DESKTOP_SCREENSHOT_TOOL_NAME,
   DESKTOP_SCROLL_TOOL_NAME,
+  DESKTOP_TYPE_TOOL_NAME,
   DESKTOP_WAIT_TOOL_NAME,
   IMAGE_GENERATE_TOOL_NAME,
   IMAGE_PLUGIN_ID,
   isAppPluginEnabledByDefault,
   type AppPluginDescriptor,
   type AppPluginId,
-  type AppPluginInstance
+  type AppPluginInstance,
+  type AppPluginToolName
 } from '@renderer/lib/app-plugin/types'
+
+const TOOL_ARG_LABELS: Record<AppPluginToolName, string[]> = {
+  [IMAGE_GENERATE_TOOL_NAME]: ['prompt', 'count'],
+  [BROWSER_NAVIGATE_TOOL_NAME]: ['url', 'action'],
+  [BROWSER_GET_CONTENT_TOOL_NAME]: ['selector', 'type'],
+  [BROWSER_SCREENSHOT_TOOL_NAME]: ['no args'],
+  [BROWSER_SNAPSHOT_TOOL_NAME]: ['no args'],
+  [BROWSER_CLICK_TOOL_NAME]: ['selector'],
+  [BROWSER_TYPE_TOOL_NAME]: ['selector', 'text', 'clear', 'submit'],
+  [BROWSER_SCROLL_TOOL_NAME]: ['direction', 'amount'],
+  [DESKTOP_SCREENSHOT_TOOL_NAME]: ['no args'],
+  [DESKTOP_CLICK_TOOL_NAME]: ['x', 'y', 'button', 'action'],
+  [DESKTOP_TYPE_TOOL_NAME]: ['text', 'key', 'hotkey'],
+  [DESKTOP_SCROLL_TOOL_NAME]: ['x', 'y', 'scrollX', 'scrollY'],
+  [DESKTOP_WAIT_TOOL_NAME]: ['delayMs']
+}
 
 function resolveDefaultImageModelId(providerId: string): string | null {
   const provider = useProviderStore.getState().providers.find((item) => item.id === providerId)
@@ -48,9 +80,16 @@ function DesktopControlPluginIcon(): React.JSX.Element {
   return <MonitorSmartphone className="size-4" />
 }
 
+function BrowserPluginIcon(): React.JSX.Element {
+  return <Globe className="size-4" />
+}
+
 function getPluginIcon(id: AppPluginId): React.JSX.Element {
   if (id === IMAGE_PLUGIN_ID) {
     return <ImagePluginIcon />
+  }
+  if (id === BROWSER_PLUGIN_ID) {
+    return <BrowserPluginIcon />
   }
   if (id === DESKTOP_CONTROL_PLUGIN_ID) {
     return <DesktopControlPluginIcon />
@@ -79,9 +118,16 @@ function getPluginState(options: {
   return 'ready'
 }
 
+function getToolStatusDescriptionKey(descriptor: AppPluginDescriptor): string {
+  if (descriptor.requiresModelConfig) return 'plugin.toolStatusDesc'
+  if (descriptor.id === BROWSER_PLUGIN_ID) return 'plugin.toolStatusDescBrowser'
+  return 'plugin.toolStatusDescDesktop'
+}
+
 export function AppPluginPanel(): React.JSX.Element {
   const { t } = useTranslation('settings')
   const [selectedPluginId, setSelectedPluginId] = useState<AppPluginId>(IMAGE_PLUGIN_ID)
+  const [clearingCookies, setClearingCookies] = useState(false)
   const activeProjectId = useChatStore((state) => state.activeProjectId)
   const pluginsByProject = useAppPluginStore((state) => state.pluginsByProject)
   const updatePlugin = useAppPluginStore((state) => state.updatePlugin)
@@ -143,6 +189,27 @@ export function AppPluginPanel(): React.JSX.Element {
     pluginEnabled: Boolean(selectedPlugin?.enabled),
     isResolvedImageModelReady
   })
+  const browserAllowedDomainText = (selectedPlugin.browserAllowedDomains ?? []).join('\n')
+  const browserBlockedDomainText = (selectedPlugin.browserBlockedDomains ?? []).join('\n')
+
+  const handleClearBrowserCookies = async (): Promise<void> => {
+    setClearingCookies(true)
+    try {
+      const result = (await ipcClient.invoke(IPC.BROWSER_CLEAR_COOKIES)) as
+        | { success: true }
+        | { success: false; error?: string }
+      if (result.success) {
+        toast.success(t('plugin.browser.cookiesCleared'))
+      } else {
+        toast.error(t('plugin.browser.cookiesClearFailed'), { description: result.error })
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      toast.error(t('plugin.browser.cookiesClearFailed'), { description: message })
+    } finally {
+      setClearingCookies(false)
+    }
+  }
 
   return (
     <div className="flex h-full min-h-0 gap-6">
@@ -369,13 +436,78 @@ export function AppPluginPanel(): React.JSX.Element {
               </section>
             ) : null}
 
+            {selectedPlugin.id === BROWSER_PLUGIN_ID ? (
+              <section className="space-y-4 rounded-xl border p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-medium">{t('plugin.browser.title')}</p>
+                    <p className="text-xs text-muted-foreground">{t('plugin.browser.desc')}</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 gap-2"
+                    onClick={() => void handleClearBrowserCookies()}
+                    disabled={clearingCookies}
+                  >
+                    <Trash2 className="size-3.5" />
+                    {clearingCookies
+                      ? t('plugin.browser.clearingCookies')
+                      : t('plugin.browser.clearCookies')}
+                  </Button>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="text-xs font-medium">
+                      {t('plugin.browser.blockedDomains')}
+                    </label>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t('plugin.browser.blockedDomainsDesc')}
+                    </p>
+                    <Textarea
+                      className="mt-2 min-h-28 font-mono text-xs"
+                      placeholder={t('plugin.browser.domainPlaceholder')}
+                      value={browserBlockedDomainText}
+                      onChange={(event) =>
+                        updatePlugin(selectedPlugin.id, {
+                          browserBlockedDomains: parseBrowserDomainList(event.target.value)
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-medium">
+                      {t('plugin.browser.allowedDomains')}
+                    </label>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t('plugin.browser.allowedDomainsDesc')}
+                    </p>
+                    <Textarea
+                      className="mt-2 min-h-28 font-mono text-xs"
+                      placeholder={t('plugin.browser.domainPlaceholder')}
+                      value={browserAllowedDomainText}
+                      onChange={(event) =>
+                        updatePlugin(selectedPlugin.id, {
+                          browserAllowedDomains: parseBrowserDomainList(event.target.value)
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+
+                <p className="text-xs text-muted-foreground/80">
+                  {t('plugin.browser.domainRuleHint')}
+                </p>
+              </section>
+            ) : null}
+
             <section className="space-y-3 rounded-xl border p-4">
               <div>
                 <p className="text-sm font-medium">{t('plugin.toolStatus')}</p>
                 <p className="text-xs text-muted-foreground">
-                  {selectedDescriptor.requiresModelConfig
-                    ? t('plugin.toolStatusDesc')
-                    : t('plugin.toolStatusDescDesktop')}
+                  {t(getToolStatusDescriptionKey(selectedDescriptor))}
                 </p>
               </div>
               <div className="space-y-3">
@@ -389,36 +521,11 @@ export function AppPluginPanel(): React.JSX.Element {
                       {t(`plugin.toolArgsMap.${toolName}`)}
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                      {toolName === IMAGE_GENERATE_TOOL_NAME ? (
-                        <>
-                          <span className="rounded-full bg-muted px-2 py-0.5">prompt</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">count</span>
-                        </>
-                      ) : toolName === DESKTOP_SCREENSHOT_TOOL_NAME ? (
-                        <span className="rounded-full bg-muted px-2 py-0.5">no args</span>
-                      ) : toolName === DESKTOP_CLICK_TOOL_NAME ? (
-                        <>
-                          <span className="rounded-full bg-muted px-2 py-0.5">x</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">y</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">button</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">action</span>
-                        </>
-                      ) : toolName === DESKTOP_SCROLL_TOOL_NAME ? (
-                        <>
-                          <span className="rounded-full bg-muted px-2 py-0.5">x</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">y</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">scrollX</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">scrollY</span>
-                        </>
-                      ) : toolName === DESKTOP_WAIT_TOOL_NAME ? (
-                        <span className="rounded-full bg-muted px-2 py-0.5">delayMs</span>
-                      ) : (
-                        <>
-                          <span className="rounded-full bg-muted px-2 py-0.5">text</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">key</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">hotkey</span>
-                        </>
-                      )}
+                      {TOOL_ARG_LABELS[toolName].map((label) => (
+                        <span key={label} className="rounded-full bg-muted px-2 py-0.5">
+                          {label}
+                        </span>
+                      ))}
                     </div>
                   </div>
                 ))}

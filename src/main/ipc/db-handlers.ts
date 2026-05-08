@@ -136,7 +136,6 @@ export function registerDbHandlers(options: RegisterDbHandlersOptions = {}): voi
         pluginId?: string
         providerId?: string
         modelId?: string
-        longRunningMode?: boolean
       }
     ) => {
       const projectId = session.projectId
@@ -178,7 +177,6 @@ export function registerDbHandlers(options: RegisterDbHandlersOptions = {}): voi
           sshConnectionId: string | null
           planId: string | null
           pinned: boolean
-          longRunningMode: boolean
         }>
       }
     ) => {
@@ -210,6 +208,10 @@ export function registerDbHandlers(options: RegisterDbHandlersOptions = {}): voi
 
   ipcMain.handle('db:messages:list', (_event, sessionId: string) => {
     return messagesDao.getMessages(sessionId)
+  })
+
+  ipcMain.handle('db:messages:list-user', (_event, sessionId: string) => {
+    return messagesDao.getUserMessages(sessionId)
   })
 
   ipcMain.handle(

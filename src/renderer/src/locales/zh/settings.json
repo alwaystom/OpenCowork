@@ -314,7 +314,7 @@
   },
   "plugin": {
     "title": "插件",
-    "subtitle": "配置可选 Tool 插件，默认均为禁用",
+    "subtitle": "配置可选 Tool 插件及其访问规则",
     "enable": "启用插件",
     "enableDesc": "启用并配置完成后，Agent 才会获得对应 Tool",
     "enabled": "已启用",
@@ -331,10 +331,18 @@
     "selectModel": "选择图片模型",
     "toolStatus": "Tool 状态",
     "toolStatusDesc": "只有在插件启用且模型有效时，图片 Tool 才会暴露给 Agent。",
+    "toolStatusDescBrowser": "浏览器工具仅在浏览器插件启用后才会暴露给 Agent。手动浏览和 Agent 导航都会遵守域名规则。",
     "toolStatusDescDesktop": "桌面控制工具仅在插件启用后才会暴露给 Agent，但每次调用仍需审批；若模型同时启用 Computer Use，则会优先通过 Computer Use 代理这些能力。",
     "toolArgs": "可用参数：prompt、count",
     "toolArgsMap": {
       "ImageGenerate": "可用参数：prompt、count",
+      "BrowserNavigate": "可用参数：url、action",
+      "BrowserGetContent": "可用参数：selector、type",
+      "BrowserScreenshot": "可用参数：无",
+      "BrowserSnapshot": "可用参数：无",
+      "BrowserClick": "可用参数：selector",
+      "BrowserType": "可用参数：selector、text、clear、submit",
+      "BrowserScroll": "可用参数：direction、amount",
       "DesktopScreenshot": "可用参数：无",
       "DesktopClick": "可用参数：x、y、button、action",
       "DesktopType": "可用参数：text、key、hotkey",
@@ -346,12 +354,32 @@
       "not_ready": "插件已启用，但所需配置尚未完成。",
       "ready": "插件已就绪，Agent 可以调用其工具。"
     },
+    "browser": {
+      "title": "浏览器隐私与访问",
+      "desc": "清理浏览器 Cookie，并配置内置浏览器可访问的域名。",
+      "clearCookies": "清理 Cookie",
+      "clearingCookies": "清理中...",
+      "cookiesCleared": "浏览器 Cookie 已清理",
+      "cookiesClearFailed": "清理浏览器 Cookie 失败",
+      "blockedDomains": "禁止访问域名",
+      "blockedDomainsDesc": "命中的域名及其子域名会被拒绝导航。",
+      "allowedDomains": "允许访问域名",
+      "allowedDomainsDesc": "留空表示允许所有域名；填写后仅允许匹配域名打开。",
+      "domainPlaceholder": "example.com\nsub.example.org",
+      "domainRuleHint": "每行一个域名，也可以用逗号分隔。禁止名单优先于允许名单；子域名会自动匹配。"
+    },
     "items": {
       "image": {
         "title": "图片插件",
         "description": "为 Agent 提供专用图片生成 Tool。",
         "promptTitle": "Tool 使用约束",
         "promptDesc": "仅当你希望 Agent 直接生成图片时再启用。Tool 只接受 `prompt` 和 `count`，并使用当前配置的图片模型执行生成。"
+      },
+      "browser": {
+        "title": "浏览器插件",
+        "description": "为 Agent 提供内置浏览器面板和浏览器自动化工具。",
+        "promptTitle": "Tool 使用约束",
+        "promptDesc": "Agent 可以打开网页、提取内容、截图、读取交互元素、点击、输入和滚动。域名允许/禁止规则会在导航前生效。"
       },
       "desktop-control": {
         "title": "桌面控制插件",

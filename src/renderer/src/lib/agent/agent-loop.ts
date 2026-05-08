@@ -40,6 +40,19 @@ function isAwaitingUserReviewToolResult(output: ToolResultContent): boolean {
   )
 }
 
+function extractStructuredToolError(output: ToolResultContent): string | undefined {
+  if (typeof output !== 'string') return undefined
+  const parsed = decodeStructuredToolResult(output)
+  if (!parsed || Array.isArray(parsed)) return undefined
+
+  const hasErrorOnlyShape = Object.keys(parsed).length === 1
+  if (typeof parsed.error === 'string' && (parsed.success === false || hasErrorOnlyShape)) {
+    return parsed.error
+  }
+
+  return undefined
+}
+
 class ProviderRequestError extends Error {
   statusCode?: number
   errorType?: string
@@ -532,12 +545,13 @@ export async function* runAgentLoop(
       } => {
         const { tc, index, output, toolError, startedAt, completedAt } = params
         const sanitizedInput = summarizeToolInputForHistory(tc.name, tc.input)
+        const resultError = toolError ?? extractStructuredToolError(output)
         const resultEvent: ToolCallState = {
           ...tc,
           input: sanitizedInput,
-          status: toolError ? 'error' : 'completed',
+          status: resultError ? 'error' : 'completed',
           output,
-          ...(toolError ? { error: toolError } : {}),
+          ...(resultError ? { error: resultError } : {}),
           startedAt,
           completedAt
         }
@@ -546,7 +560,7 @@ export async function* runAgentLoop(
           type: 'tool_result',
           toolUseId: tc.id,
           content: output,
-          ...(toolError ? { isError: true } : {})
+          ...(resultError ? { isError: true } : {})
         }
         toolResults[index] = resultBlock
         shouldStopForUserReview ||= isAwaitingUserReviewToolResult(output)

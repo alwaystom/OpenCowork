@@ -501,6 +501,12 @@
     "copyAll": "复制全部",
     "copied": "已复制！",
     "scrollToBottom": "滚动到底部",
+    "userLocator": {
+      "title": "用户消息",
+      "jumpLabel": "跳转到第 {{index}} 条用户消息：{{preview}}",
+      "imageMessage": "{{count}} 张图片",
+      "emptyMessage": "空消息"
+    },
     "imageCopied": "图片已复制到剪贴板",
     "imageCopiedDesc": "可直接粘贴到聊天或文档中",
     "exportImageFailed": "导出图片失败",

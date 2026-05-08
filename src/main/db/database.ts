@@ -790,14 +790,6 @@ export function getDb(): Database.Database {
     console.warn('[DB] Skip idx_sessions_project_id: sessions.project_id is missing')
   }
 
-  if (!hasColumn(db, 'sessions', 'long_running_mode')) {
-    try {
-      db.exec(`ALTER TABLE sessions ADD COLUMN long_running_mode INTEGER DEFAULT 0`)
-    } catch {
-      /* exists */
-    }
-  }
-
   // Backfill projects and project_id for legacy sessions
   migrateSessionsToProjects(db)
 

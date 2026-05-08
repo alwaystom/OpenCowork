@@ -501,6 +501,12 @@
     "copyAll": "Copy All",
     "copied": "Copied!",
     "scrollToBottom": "Scroll to bottom",
+    "userLocator": {
+      "title": "User messages",
+      "jumpLabel": "Jump to user message {{index}}: {{preview}}",
+      "imageMessage": "{{count}} images",
+      "emptyMessage": "Empty message"
+    },
     "imageCopied": "Image copied to clipboard",
     "imageCopiedDesc": "You can paste it into chat or documents",
     "exportImageFailed": "Export image failed",

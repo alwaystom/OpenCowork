@@ -6,6 +6,7 @@ import { useProviderStore } from './provider-store'
 import { useChatStore } from './chat-store'
 import {
   APP_PLUGIN_DESCRIPTORS,
+  BROWSER_PLUGIN_ID,
   DESKTOP_CONTROL_PLUGIN_ID,
   IMAGE_PLUGIN_ID,
   isAppPluginEnabledByDefault,
@@ -26,6 +27,14 @@ function createDefaultPlugin(id: AppPluginId): AppPluginInstance {
 
 const GLOBAL_PROJECT_ID = '__global__'
 
+function sanitizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
 function resolveProjectId(projectId?: string | null): string {
   return projectId ?? useChatStore.getState().activeProjectId ?? GLOBAL_PROJECT_ID
 }
@@ -41,6 +50,10 @@ function provisionBuiltinPlugins(plugins: AppPluginInstance[]): AppPluginInstanc
     }
     if (descriptor.id === DESKTOP_CONTROL_PLUGIN_ID) {
       existing.enabled = false
+    }
+    if (descriptor.id === BROWSER_PLUGIN_ID) {
+      existing.browserAllowedDomains = sanitizeStringList(existing.browserAllowedDomains)
+      existing.browserBlockedDomains = sanitizeStringList(existing.browserBlockedDomains)
     }
 
     if (typeof existing.useGlobalModel !== 'boolean') {
@@ -104,6 +117,7 @@ interface AppPluginStore {
   getEnabledPlugins: (projectId?: string | null) => AppPluginInstance[]
   getResolvedImagePluginConfig: (projectId?: string | null) => ProviderConfig | null
   isImageToolAvailable: (projectId?: string | null) => boolean
+  isBrowserToolAvailable: (projectId?: string | null) => boolean
   isDesktopControlToolAvailable: () => boolean
 }
 
@@ -167,11 +181,16 @@ export const useAppPluginStore = create<AppPluginStore>()(
 
       isImageToolAvailable: (projectId) => get().getResolvedImagePluginConfig(projectId) !== null,
 
+      isBrowserToolAvailable: (projectId) => {
+        const plugin = get().getPlugin(BROWSER_PLUGIN_ID, projectId)
+        return Boolean(plugin?.enabled)
+      },
+
       isDesktopControlToolAvailable: () => false
     }),
     {
       name: 'opencowork-app-plugins',
-      version: 3,
+      version: 4,
       storage: createJSONStorage(() => configStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as {

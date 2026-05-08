@@ -2,7 +2,16 @@ import { useRef, useEffect } from 'react'
 import { CodeEditor } from '@renderer/components/editor/CodeEditor'
 import type { ViewerProps } from '../viewer-registry'
 
-export function HtmlViewer({ content, viewMode, onContentChange }: ViewerProps): React.JSX.Element {
+export function HtmlViewer({
+  filePath,
+  content,
+  viewMode,
+  onContentChange,
+  onSave,
+  initialLine,
+  initialColumn,
+  initialPositionKey
+}: ViewerProps): React.JSX.Element {
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   useEffect(() => {
@@ -22,5 +31,15 @@ export function HtmlViewer({ content, viewMode, onContentChange }: ViewerProps):
     )
   }
 
-  return <CodeEditor filePath="preview.html" content={content} onChange={onContentChange} />
+  return (
+    <CodeEditor
+      filePath={filePath}
+      content={content}
+      onChange={onContentChange}
+      onSave={onSave}
+      initialLine={initialLine}
+      initialColumn={initialColumn}
+      initialPositionKey={initialPositionKey}
+    />
+  )
 }

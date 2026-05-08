@@ -16,6 +16,7 @@ import {
   AGENT_STREAM_PROTOCOL_VERSION,
   AGGREGATABLE_EVENT_TYPES
 } from '../../shared/agent-stream-protocol'
+import { summarizeLiveToolInput } from '../../shared/live-tool-input-summary'
 
 // ---- Configuration ----
 
@@ -42,6 +43,7 @@ interface RunAccumulator {
   textDelta: string
   thinkingDelta: string
   toolArgsDelta: Map<string, Record<string, unknown>>
+  toolNamesById: Map<string, string>
   pendingControl: AgentStreamEvent[]
   timer: ReturnType<typeof setTimeout> | null
   lastEventAt: number
@@ -86,6 +88,7 @@ export class AdaptiveEventBatcher {
         textDelta: '',
         thinkingDelta: '',
         toolArgsDelta: new Map(),
+        toolNamesById: new Map(),
         pendingControl: [],
         timer: null,
         lastEventAt: Date.now()
@@ -93,6 +96,7 @@ export class AdaptiveEventBatcher {
       this.runs.set(runId, acc)
     }
     acc.lastEventAt = Date.now()
+    this.rememberToolName(acc, event)
 
     if (AGGREGATABLE_EVENT_TYPES.has(event.type)) {
       this.accumulate(acc, event)
@@ -153,7 +157,10 @@ export class AdaptiveEventBatcher {
         acc.thinkingDelta += event.thinking
         break
       case 'tool_use_args_delta':
-        acc.toolArgsDelta.set(event.toolCallId, event.partialInput)
+        acc.toolArgsDelta.set(
+          event.toolCallId,
+          summarizeLiveToolInput(acc.toolNamesById.get(event.toolCallId) ?? '', event.partialInput)
+        )
         break
     }
 
@@ -205,6 +212,28 @@ export class AdaptiveEventBatcher {
       acc.timer = null
       this.flushAccumulated(acc)
     }, intervalMs)
+  }
+
+  private rememberToolName(acc: RunAccumulator, event: AgentStreamEvent): void {
+    switch (event.type) {
+      case 'tool_use_streaming_start':
+        if (event.toolCallId && event.toolName) {
+          acc.toolNamesById.set(event.toolCallId, event.toolName)
+        }
+        break
+      case 'tool_use_generated':
+        if (event.toolUseBlock.id && event.toolUseBlock.name) {
+          acc.toolNamesById.set(event.toolUseBlock.id, event.toolUseBlock.name)
+        }
+        break
+      case 'tool_call_start':
+      case 'tool_call_approval_needed':
+      case 'tool_call_result':
+        if (event.toolCall.id && event.toolCall.name) {
+          acc.toolNamesById.set(event.toolCall.id, event.toolCall.name)
+        }
+        break
+    }
   }
 
   private emit(acc: RunAccumulator, events: AgentStreamEvent[]): void {

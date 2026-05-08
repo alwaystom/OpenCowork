@@ -6,7 +6,6 @@ import {
   unregisterWebSearchTool,
   isWebSearchToolRegistered
 } from './web-search-tool'
-import { registerBrowserTool, unregisterBrowserTool, isBrowserToolRegistered } from './browser-tool'
 import { registerBashTools } from './bash-tool'
 import { registerSubAgents } from '../agent/sub-agents/builtin'
 import { registerTeamTools } from '../agent/teams/register'
@@ -53,15 +52,6 @@ export function updateWebSearchToolRegistration(enabled: boolean): void {
     registerWebSearchTool()
   } else if (!enabled && isRegistered) {
     unregisterWebSearchTool()
-  }
-}
-
-export function updateBrowserToolRegistration(enabled: boolean): void {
-  const isRegistered = isBrowserToolRegistered()
-  if (enabled && !isRegistered) {
-    registerBrowserTool()
-  } else if (!enabled && isRegistered) {
-    unregisterBrowserTool()
   }
 }
 

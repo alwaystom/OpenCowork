@@ -18,6 +18,13 @@ export function getMessages(sessionId: string): MessageRow[] {
     .all(sessionId) as MessageRow[]
 }
 
+export function getUserMessages(sessionId: string): MessageRow[] {
+  const db = getDb()
+  return db
+    .prepare('SELECT * FROM messages WHERE session_id = ? AND role = ? ORDER BY sort_order ASC')
+    .all(sessionId, 'user') as MessageRow[]
+}
+
 export function getMessagesPage(sessionId: string, limit: number, offset: number): MessageRow[] {
   const db = getDb()
   return db

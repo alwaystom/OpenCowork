@@ -875,6 +875,46 @@ export const routinAiPreset: BuiltinProviderPreset = {
     },
     // ── DeepSeek ──
     {
+      id: 'deepseek-v4-flash',
+      name: 'DeepSeek V4 Flash',
+      icon: 'deepseek',
+      enabled: true,
+      contextLength: 1_000_000,
+      maxOutputTokens: 384_000,
+      supportsVision: false,
+      supportsFunctionCall: true,
+      type:'anthropic',
+      inputPrice: 1,
+      outputPrice: 2,
+      cacheCreationPrice: 1,
+      cacheHitPrice: 0.2,
+      supportsThinking: true,
+      thinkingConfig: {
+        bodyParams: { enable_thinking: true },
+        disabledBodyParams: { enable_thinking: false }
+      }
+    },
+    {
+      id: 'deepseek-v4-pro',
+      name: 'DeepSeek V4 Pro',
+      icon: 'deepseek',
+      enabled: true,
+      contextLength: 1_000_000,
+      maxOutputTokens: 384_000,
+      supportsVision: false,
+      supportsFunctionCall: true,
+      type:'anthropic',
+      inputPrice: 12,
+      outputPrice: 24,
+      cacheCreationPrice: 12,
+      cacheHitPrice: 1,
+      supportsThinking: true,
+      thinkingConfig: {
+        bodyParams: { enable_thinking: true },
+        disabledBodyParams: { enable_thinking: false }
+      }
+    },
+    {
       id: 'deepseek-v3.2',
       name: 'DeepSeek V3.2',
       icon: 'deepseek',

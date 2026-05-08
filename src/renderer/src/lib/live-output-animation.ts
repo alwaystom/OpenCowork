@@ -16,6 +16,12 @@ export function getLiveOutputSurfaceClass(style: LiveOutputAnimationStyle): stri
   }`
 }
 
+export function getLiveOutputComponentClass(style: LiveOutputAnimationStyle): string {
+  return `ai-live-component ${
+    style === 'elegant' ? 'ai-live-component--elegant' : 'ai-live-component--agile'
+  }`
+}
+
 export function getLiveOutputThinkingClass(style: LiveOutputAnimationStyle): string {
   return `ai-live-thinking ${
     style === 'elegant' ? 'ai-live-thinking--elegant' : 'ai-live-thinking--agile'

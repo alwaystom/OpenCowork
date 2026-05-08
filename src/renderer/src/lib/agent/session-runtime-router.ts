@@ -9,6 +9,7 @@ import { emitSessionRuntimeSync } from '@renderer/lib/session-runtime-sync'
 import { useChatStore } from '@renderer/stores/chat-store'
 import { summarizeToolInputForHistory } from '@renderer/lib/tools/tool-input-sanitizer'
 import { useBackgroundSessionStore } from '@renderer/stores/background-session-store'
+import { recordStreamingForegroundFlush } from '@renderer/lib/streaming-perf'
 
 /**
  * Strip any <think>...</think> markers streamed by providers that wrap thinking in pseudo-tags.
@@ -150,9 +151,11 @@ function flushForegroundMutations(): void {
   _foregroundFlushRafId = null
   if (_pendingForegroundMutations.length === 0) return
   const thunks = _pendingForegroundMutations.splice(0)
+  const startedAt = performance.now()
   for (const thunk of thunks) {
     thunk()
   }
+  recordStreamingForegroundFlush(performance.now() - startedAt, { count: thunks.length })
 }
 
 function queueForegroundMutation(thunk: ForegroundMutationThunk): void {

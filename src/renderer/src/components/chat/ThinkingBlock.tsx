@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 import { MONO_FONT } from '@renderer/lib/constants'
 import { useSettingsStore } from '@renderer/stores/settings-store'
 import {
+  getLiveOutputComponentClass,
   getLiveOutputCursorClass,
   getLiveOutputDotClass,
   getLiveOutputSurfaceClass,
@@ -16,6 +17,7 @@ import {
   resolveLocalFilePath,
   openLocalFilePath
 } from '@renderer/lib/preview/viewers/markdown-components'
+import { useStreamingRenderPool } from '@renderer/hooks/use-typewriter'
 import { motion, AnimatePresence } from 'motion/react'
 
 interface ThinkingBlockProps {
@@ -34,6 +36,10 @@ export const ThinkingBlock = memo(function ThinkingBlock({
   const { t, i18n } = useTranslation('chat')
   const liveOutputAnimationStyle = useSettingsStore((s) => s.liveOutputAnimationStyle)
   const isThinking = isStreaming && !completedAt
+  const renderPool = useStreamingRenderPool(thinking, isThinking, liveOutputAnimationStyle)
+  const liveComponentClassName = isThinking
+    ? getLiveOutputComponentClass(liveOutputAnimationStyle)
+    : ''
   const hasThinkingContent = thinking.trim().length > 0
   const defaultCollapsed = !isThinking && hasThinkingContent
 
@@ -53,7 +59,7 @@ export const ThinkingBlock = memo(function ThinkingBlock({
   useEffect(() => {
     if (!isThinking || !hasThinkingContent || !contentRef.current) return
     contentRef.current.scrollTop = contentRef.current.scrollHeight
-  }, [hasThinkingContent, isThinking, thinking])
+  }, [hasThinkingContent, isThinking, renderPool.text])
 
   const expanded = isThinking || (hasThinkingContent && !collapsed)
 
@@ -78,7 +84,7 @@ export const ThinkingBlock = memo(function ThinkingBlock({
       : ''
 
   return (
-    <div className="my-5">
+    <div className={`my-5${liveComponentClassName ? ` ${liveComponentClassName}` : ''}`}>
       <button
         onClick={() => {
           if (isThinking) return
@@ -112,8 +118,11 @@ export const ThinkingBlock = memo(function ThinkingBlock({
                   {isThinking ? (
                     <div
                       className={`${getLiveOutputSurfaceClass(liveOutputAnimationStyle)} whitespace-pre-wrap break-words leading-relaxed`}
+                      data-render-pool-size={renderPool.poolSize}
+                      data-rendered-length={renderPool.renderedLength}
+                      data-target-length={renderPool.targetLength}
                     >
-                      {thinking}
+                      {renderPool.text}
                       <span className={getLiveOutputCursorClass(liveOutputAnimationStyle)} />
                     </div>
                   ) : (

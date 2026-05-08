@@ -12,7 +12,10 @@ const OTHER_SCHEME_RE = /^[a-zA-Z][a-zA-Z\d+.-]*:/
 const ROOT_FILE_NAME_RE =
   /^(?:package(?:-lock)?\.json|pnpm-lock\.yaml|bun\.lock|tsconfig(?:\.[^.]+)?\.json|README(?:\.[A-Za-z0-9_-]+)?\.md|CHANGELOG\.md|LICENSE|AGENTS\.md|CLAUDE\.md|SOUL\.md|USER\.md|MEMORY\.md|Dockerfile|docker-compose(?:\.[A-Za-z0-9_-]+)?\.ya?ml|Makefile|\.env(?:\.[A-Za-z0-9_-]+)?)$/i
 const SPECIAL_FILE_NAME_RE = /^(?:Dockerfile|Makefile|LICENSE)$/i
-const EXPLICIT_LINE_RE = /(?::\d+(?::\d+)?)$|#L\d+(?:-L?\d+)?$/i
+const PAREN_LINE_RE = /\s+\(line\s+(\d+)(?::(\d+))?\)$/i
+const HASH_LINE_RE = /#L(\d+)(?:-L?\d+)?$/i
+const COLON_LINE_RE = /(?<!^[a-zA-Z]):(\d+)(?::(\d+))?$/
+const EXPLICIT_LINE_RE = /(?::\d+(?::\d+)?)$|#L\d+(?:-L?\d+)?$|\s+\(line\s+\d+(?::\d+)?\)$/i
 
 function getActiveSessionContext(): { workingFolder?: string; sshConnectionId?: string } {
   const chatState = useChatStore.getState()
@@ -28,6 +31,7 @@ function getActiveSessionContext(): { workingFolder?: string; sshConnectionId?: 
 
 function stripLocalPathDecorators(value: string): string {
   let normalized = value.trim()
+  normalized = normalized.replace(PAREN_LINE_RE, '')
   const queryIndex = normalized.indexOf('?')
   if (queryIndex >= 0) normalized = normalized.slice(0, queryIndex)
   const hashIndex = normalized.indexOf('#')
@@ -36,6 +40,23 @@ function stripLocalPathDecorators(value: string): string {
     normalized = normalized.replace(/:\d+(?::\d+)?$/, '')
   }
   return normalized
+}
+
+function getLocalPathTarget(value: string): { line?: number; column?: number } {
+  const raw = value.trim()
+  const parenMatch = PAREN_LINE_RE.exec(raw)
+  const hashMatch = HASH_LINE_RE.exec(raw)
+  const colonMatch = COLON_LINE_RE.exec(raw.replace(PAREN_LINE_RE, '').split('#', 1)[0])
+  const lineText = parenMatch?.[1] ?? hashMatch?.[1] ?? colonMatch?.[1]
+  if (!lineText) return {}
+
+  const line = Number(lineText)
+  const columnText = parenMatch?.[2] ?? colonMatch?.[2]
+  const column = columnText ? Number(columnText) : undefined
+  return {
+    line: Number.isFinite(line) && line > 0 ? line : undefined,
+    column: column !== undefined && Number.isFinite(column) && column > 0 ? column : undefined
+  }
 }
 
 function decodeFileUrlPath(value: string): string {
@@ -128,8 +149,11 @@ export function openLocalFilePath(value: string, filePath?: string): boolean {
   if (!resolved) return false
 
   const { sshConnectionId } = getActiveSessionContext()
+  const target = getLocalPathTarget(value)
   const viewMode = EXPLICIT_LINE_RE.test(value.trim()) ? 'code' : undefined
-  useUIStore.getState().openFilePreview(resolved, viewMode, sshConnectionId)
+  useUIStore
+    .getState()
+    .openFilePreview(resolved, viewMode, sshConnectionId, undefined, target.line, target.column)
   return true
 }
 

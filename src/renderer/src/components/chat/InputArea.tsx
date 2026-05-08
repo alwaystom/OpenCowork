@@ -668,16 +668,8 @@ export function InputArea({
       : undefined
     return targetSession?.sshConnectionId ?? activeProject?.sshConnectionId ?? null
   })
-  const [homeLongRunningMode, setHomeLongRunningMode] = useLocalState(false)
   const showInlineClearConversation = false
-  const {
-    activeSessionId,
-    hasMessages,
-    clearSessionMessages,
-    longRunningMode,
-    setSessionLongRunningMode,
-    updateSessionMode
-  } = useChatStore(
+  const { activeSessionId, hasMessages, clearSessionMessages, updateSessionMode } = useChatStore(
     useShallow((s) => {
       const targetSessionId = sessionId ?? s.activeSessionId
       const idx = targetSessionId ? s.sessionsById[targetSessionId] : undefined
@@ -686,8 +678,6 @@ export function InputArea({
         activeSessionId: targetSessionId,
         hasMessages: (targetSession?.messageCount ?? 0) > 0,
         clearSessionMessages: s.clearSessionMessages,
-        longRunningMode: targetSession?.longRunningMode ?? false,
-        setSessionLongRunningMode: s.setSessionLongRunningMode,
         updateSessionMode: s.updateSessionMode
       }
     })
@@ -1538,7 +1528,6 @@ export function InputArea({
     )
   }, [])
 
-  const effectiveLongRunningMode = activeSessionId ? longRunningMode : homeLongRunningMode
   const showAllComposerModesForNewSession = !draftSessionId && Boolean(activeProjectId)
   const availableComposerModes = React.useMemo(() => {
     if (showAllComposerModesForNewSession) {
@@ -1562,14 +1551,6 @@ export function InputArea({
     },
     [draftSessionId, setMode, updateSessionMode]
   )
-
-  const handleToggleLongRunningMode = React.useCallback(() => {
-    if (activeSessionId) {
-      setSessionLongRunningMode(activeSessionId, !longRunningMode)
-      return
-    }
-    setHomeLongRunningMode((current) => !current)
-  }, [activeSessionId, longRunningMode, setHomeLongRunningMode, setSessionLongRunningMode])
 
   const getLiveEditorState = React.useCallback(() => {
     const liveDocument = editorRef.current?.getDocumentSnapshot() ?? documentRef.current
@@ -1605,7 +1586,6 @@ export function InputArea({
         : serialized
 
     onSend(message, attachedImages.length > 0 ? attachedImages : undefined, {
-      longRunningMode: effectiveLongRunningMode,
       clearCompletedTasksOnTurnStart: true
     })
 
@@ -1631,7 +1611,6 @@ export function InputArea({
     cancelPromptRecommendation,
     selectedSkill,
     onSend,
-    effectiveLongRunningMode,
     activeDraftKey,
     removePersistedDraft
   ])
@@ -2051,28 +2030,6 @@ export function InputArea({
   )
 
   const activeMcpBadge = <ActiveMcpsBadge projectId={activeProjectId} />
-
-  const longRunningControl = (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className={composerIconControlClass}
-          data-active={effectiveLongRunningMode ? 'true' : 'false'}
-          onClick={handleToggleLongRunningMode}
-          disabled={disabled || isStreaming}
-        >
-          <Sparkles className="size-4" fill={effectiveLongRunningMode ? 'currentColor' : 'none'} />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>
-        {effectiveLongRunningMode
-          ? t('input.longRunningModeOn', { defaultValue: '长时间运行模式：开启' })
-          : t('input.longRunningModeOff', { defaultValue: '长时间运行模式：关闭' })}
-      </TooltipContent>
-    </Tooltip>
-  )
 
   const folderControl = onSelectFolder && !hideWorkingFolderPicker && (
     <Tooltip>
@@ -2850,7 +2807,6 @@ export function InputArea({
                 {webSearchToggleControl}
                 {skillsMenuControl}
                 {activeMcpBadge}
-                {mode !== 'chat' && longRunningControl}
                 {folderControl}
               </div>
 

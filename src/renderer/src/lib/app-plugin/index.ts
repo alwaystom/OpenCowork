@@ -7,6 +7,11 @@ import { desktopTypeTool } from './desktop-type-tool'
 import { desktopWaitTool } from './desktop-wait-tool'
 import { imageGenerateTool } from './image-tool'
 import {
+  registerBrowserTool,
+  unregisterBrowserTool,
+  isBrowserToolRegistered
+} from '../tools/browser-tool'
+import {
   DESKTOP_CLICK_TOOL_NAME,
   DESKTOP_SCREENSHOT_TOOL_NAME,
   DESKTOP_SCROLL_TOOL_NAME,
@@ -51,7 +56,7 @@ export function unregisterDesktopControlTools(): void {
 }
 
 export function isAppPluginToolsRegistered(): boolean {
-  return imageToolRegistered || desktopControlToolsRegistered
+  return imageToolRegistered || desktopControlToolsRegistered || isBrowserToolRegistered()
 }
 
 export function updateAppPluginToolRegistration(): void {
@@ -61,6 +66,12 @@ export function updateAppPluginToolRegistration(): void {
     registerImagePluginTools()
   } else {
     unregisterImagePluginTools()
+  }
+
+  if (store.isBrowserToolAvailable()) {
+    registerBrowserTool()
+  } else {
+    unregisterBrowserTool()
   }
 
   if (store.isDesktopControlToolAvailable()) {

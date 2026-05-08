@@ -119,9 +119,9 @@ export function ToolCallGroup({
           type="button"
           aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
-          className="group flex items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] text-muted-foreground transition-colors hover:bg-accent/70 hover:text-accent-foreground"
+          className="group flex items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[12px] text-muted-foreground transition-colors hover:bg-zinc-100 hover:text-foreground dark:hover:bg-accent/70 dark:hover:text-accent-foreground"
         >
-          <span className="font-medium text-foreground/80 transition-colors group-hover:text-accent-foreground">
+          <span className="font-medium text-foreground/82 transition-colors group-hover:text-foreground dark:group-hover:text-accent-foreground">
             {summaryLabel}
           </span>
           {isActive && <Loader2 className="size-3 animate-spin text-blue-400/70" />}

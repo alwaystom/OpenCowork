@@ -51,6 +51,7 @@ import { registerInputHandlers } from './ipc/input-handlers'
 import { registerNotifyHandlers } from './ipc/notify-handlers'
 import { registerScreenshotHandlers } from './ipc/screenshot-handlers'
 import { registerWebSearchHandlers } from './ipc/web-search-handlers'
+import { registerBrowserHandlers } from './ipc/browser-handlers'
 import { registerOauthHandlers } from './ipc/oauth-handlers'
 import { registerImageGifHandlers } from './ipc/image-gif-handlers'
 import { registerGitHandlers } from './ipc/git-handlers'
@@ -943,6 +944,7 @@ if (gotSingleInstanceLock) {
     loadPersistedJobs()
     registerNotifyHandlers()
     registerWebSearchHandlers()
+    registerBrowserHandlers()
     registerOauthHandlers()
     registerImageGifHandlers()
     registerGitHandlers()

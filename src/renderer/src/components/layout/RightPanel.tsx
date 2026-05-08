@@ -8,7 +8,9 @@ import { ContextPanel } from '@renderer/components/cowork/ContextPanel'
 import { useChatStore } from '@renderer/stores/chat-store'
 import { useAgentStore } from '@renderer/stores/agent-store'
 import { useSettingsStore } from '@renderer/stores/settings-store'
+import { useAppPluginStore } from '@renderer/stores/app-plugin-store'
 import { useTeamStore } from '@renderer/stores/team-store'
+import { BROWSER_PLUGIN_ID } from '@renderer/lib/app-plugin/types'
 import { TASK_TOOL_NAME } from '@renderer/lib/agent/sub-agents/create-tool'
 import { isProjectSession } from '@renderer/lib/session-scope'
 import { cn } from '@renderer/lib/utils'
@@ -34,6 +36,8 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen)
   const detailPanelOpen = useUIStore((s) => s.detailPanelOpen)
   const previewPanelOpen = useUIStore((s) => s.previewPanelOpen)
+  const previewPanelTabCount = useUIStore((s) => s.previewPanelTabs.length)
+  const activePreviewPanelTabId = useUIStore((s) => s.activePreviewPanelTabId)
   const selectedSubAgentToolUseId = useUIStore((s) => s.selectedSubAgentToolUseId)
   const subAgentExecutionDetailOpen = useUIStore((s) => s.subAgentExecutionDetailOpen)
   const subAgentExecutionDetailToolUseId = useUIStore((s) => s.subAgentExecutionDetailToolUseId)
@@ -45,8 +49,10 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen)
 
   const teamToolsEnabled = useSettingsStore((s) => s.teamToolsEnabled)
-  const builtinBrowserEnabled = useSettingsStore((s) => s.builtinBrowserEnabled)
   const activeProjectId = useChatStore((s) => s.activeProjectId)
+  const browserPluginEnabled = useAppPluginStore((s) =>
+    Boolean(s.getPlugin(BROWSER_PLUGIN_ID, activeProjectId)?.enabled)
+  )
   const activeSessionId = useChatStore((s) => s.activeSessionId)
   const activeSession = useChatStore((s) =>
     s.sessions.find((session) => session.id === s.activeSessionId)
@@ -98,7 +104,7 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
       RIGHT_PANEL_TAB_DEFS.filter(
         (item) => (teamToolsEnabled && hasSessionTeam) || item.value !== 'team'
       )
-        .filter((item) => builtinBrowserEnabled || item.value !== 'browser')
+        .filter((item) => browserPluginEnabled || item.value !== 'browser')
         .filter(
           (item) =>
             shouldShowSubAgentsTab || (item.value !== 'subagents' && item.value !== 'orchestration')
@@ -111,7 +117,7 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
           return item.value !== 'files' && item.value !== 'artifacts'
         }),
     [
-      builtinBrowserEnabled,
+      browserPluginEnabled,
       detailPanelOpen,
       hasSessionTeam,
       previewPanelOpen,
@@ -145,6 +151,12 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
   }, [resolvedSection, section, setSection])
 
   const activeTabDef = visibleTabs.find((item) => item.value === resolvedTab) ?? visibleTabs[0]
+  const previewUsesFileChrome =
+    resolvedTab === 'preview' &&
+    previewPanelOpen &&
+    previewPanelTabCount > 0 &&
+    !!activePreviewPanelTabId &&
+    !detailPanelOpen
   const draggingRef = useRef(false)
   const startXRef = useRef(0)
   const startWidthRef = useRef(rightPanelWidth)
@@ -207,14 +219,21 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
       >
         {activeTabDef ? (
           <div className="flex h-full min-h-0 w-full flex-col">
-            <RightPanelHeader
-              activeTabDef={activeTabDef}
-              visibleTabs={visibleTabs}
-              onSelectTab={handleSelectTab}
-              onClose={() => setRightPanelOpen(false)}
-              t={t}
-            />
-            <div className="min-h-0 flex-1 overflow-auto bg-background p-4">
+            {!previewUsesFileChrome && (
+              <RightPanelHeader
+                activeTabDef={activeTabDef}
+                visibleTabs={visibleTabs}
+                onSelectTab={handleSelectTab}
+                onClose={() => setRightPanelOpen(false)}
+                t={t}
+              />
+            )}
+            <div
+              className={cn(
+                'min-h-0 flex-1 bg-background',
+                previewUsesFileChrome ? 'overflow-hidden p-0' : 'overflow-auto p-4'
+              )}
+            >
               <AnimatePresence mode="wait">
                 {(resolvedTab === 'orchestration' || resolvedTab === 'team') && (
                   <FadeIn key="orchestration" className="h-full">
@@ -251,7 +270,7 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
                       <DetailPanel embedded />
                     ) : (
                       <div className="flex h-full items-center justify-center rounded-md border border-dashed border-border/60 bg-background/40 text-xs text-muted-foreground">
-                        {t('rightPanel.previewEmpty', { defaultValue: '暂无预览内容' })}
+                        {t('rightPanel.previewEmpty', { defaultValue: 'No preview content' })}
                       </div>
                     )}
                   </FadeIn>
@@ -265,7 +284,7 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
               </AnimatePresence>
 
               {/* Browser stays mounted to preserve webview state */}
-              {builtinBrowserEnabled && (
+              {browserPluginEnabled && (
                 <div className={cn('h-full', resolvedTab !== 'browser' && 'hidden')}>
                   <BrowserPanel />
                 </div>

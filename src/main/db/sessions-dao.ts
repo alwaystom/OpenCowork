@@ -15,7 +15,6 @@ export interface SessionRow {
   plugin_id: string | null
   provider_id: string | null
   model_id: string | null
-  long_running_mode: number | null
   message_count?: number
 }
 
@@ -44,12 +43,11 @@ export function createSession(session: {
   pluginId?: string
   providerId?: string
   modelId?: string
-  longRunningMode?: boolean
 }): void {
   const db = getDb()
   db.prepare(
-    `INSERT INTO sessions (id, title, icon, mode, created_at, updated_at, message_count, project_id, working_folder, ssh_connection_id, plan_id, pinned, plugin_id, provider_id, model_id, long_running_mode)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO sessions (id, title, icon, mode, created_at, updated_at, message_count, project_id, working_folder, ssh_connection_id, plan_id, pinned, plugin_id, provider_id, model_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     session.id,
     session.title,
@@ -65,8 +63,7 @@ export function createSession(session: {
     session.pinned ? 1 : 0,
     session.pluginId ?? null,
     session.providerId ?? null,
-    session.modelId ?? null,
-    session.longRunningMode ? 1 : 0
+    session.modelId ?? null
   )
 }
 
@@ -85,7 +82,6 @@ export function updateSession(
     pluginId: string | null
     providerId: string | null
     modelId: string | null
-    longRunningMode: boolean
   }>
 ): void {
   const db = getDb()
@@ -139,10 +135,6 @@ export function updateSession(
   if (patch.modelId !== undefined) {
     sets.push('model_id = ?')
     values.push(patch.modelId)
-  }
-  if (patch.longRunningMode !== undefined) {
-    sets.push('long_running_mode = ?')
-    values.push(patch.longRunningMode ? 1 : 0)
   }
 
   if (sets.length === 0) return

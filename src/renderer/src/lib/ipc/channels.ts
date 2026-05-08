@@ -294,6 +294,9 @@ export const IPC = {
   WEB_SEARCH_CONFIG: 'web:search-config',
   WEB_SEARCH_PROVIDERS: 'web:search-providers',
 
+  // Built-in Browser
+  BROWSER_CLEAR_COOKIES: 'browser:clear-cookies',
+
   // OAuth
   OAUTH_START: 'oauth:start',
   OAUTH_STOP: 'oauth:stop',

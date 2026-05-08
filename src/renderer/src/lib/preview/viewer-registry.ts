@@ -6,8 +6,12 @@ export interface ViewerProps {
   content: string
   viewMode: 'preview' | 'code'
   onContentChange?: (content: string) => void
+  onSave?: () => void | Promise<void>
   sshConnectionId?: string
   editorRef?: React.RefObject<CodeEditorHandle | null>
+  initialLine?: number
+  initialColumn?: number
+  initialPositionKey?: number
 }
 
 export interface ViewerDefinition {

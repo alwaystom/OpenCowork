@@ -1,63 +1,155 @@
-import { useRef, useState, useEffect } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { LiveOutputAnimationStyle } from '@renderer/stores/settings-store'
+import { recordStreamingRenderPoolFlush } from '@renderer/lib/streaming-perf'
+
+interface StreamingRenderPoolState {
+  text: string
+  poolSize: number
+  renderedLength: number
+  targetLength: number
+}
+
+interface RenderPoolConfig {
+  fixedCharsPerSecond: number
+  frameIntervalMs: number
+  smallPoolChars: number
+  mediumPoolChars: number
+  largePoolChars: number
+  maxStepChars: number
+}
+
+const RENDER_POOL_CONFIG: Record<LiveOutputAnimationStyle, RenderPoolConfig> = {
+  agile: {
+    fixedCharsPerSecond: 220,
+    frameIntervalMs: 32,
+    smallPoolChars: 120,
+    mediumPoolChars: 720,
+    largePoolChars: 2400,
+    maxStepChars: 3600
+  },
+  elegant: {
+    fixedCharsPerSecond: 170,
+    frameIntervalMs: 36,
+    smallPoolChars: 96,
+    mediumPoolChars: 560,
+    largePoolChars: 1800,
+    maxStepChars: 2800
+  }
+}
+
+function getCatchupStep(poolSize: number, elapsedMs: number, config: RenderPoolConfig): number {
+  const fixedStep = Math.max(1, Math.ceil((config.fixedCharsPerSecond * elapsedMs) / 1000))
+
+  if (poolSize <= config.smallPoolChars) {
+    return Math.min(poolSize, fixedStep)
+  }
+
+  const catchupRatio =
+    poolSize <= config.mediumPoolChars ? 0.14 : poolSize <= config.largePoolChars ? 0.2 : 0.28
+  const catchupStep = Math.ceil(poolSize * catchupRatio)
+  return Math.min(poolSize, Math.max(fixedStep, catchupStep), config.maxStepChars)
+}
 
 /**
- * Smoothly reveals text character-by-character during streaming,
- * creating a fluid typewriter animation effect.
+ * Keeps live text in a render pool instead of rendering every upstream delta directly.
  *
- * Uses requestAnimationFrame with adaptive easing: reveals 12% of the
- * remaining buffer per tick (min 3 chars) at ~30 fps. This produces a
- * natural ease-out feel — text flows quickly when the buffer is large
- * and slows gracefully as it catches up to the live content.
- *
- * @param fullText - The complete text content from the store
- * @param isStreaming - Whether the text is currently being streamed
- * @returns The portion of text that should be displayed
+ * Small pools drain at a stable typewriter speed. Larger pools drain in bigger chunks so a bursty
+ * model response can catch up without forcing React/Markstream to re-render on every token.
  */
-export function useTypewriter(fullText: string, isStreaming: boolean): string {
-  const [displayLen, setDisplayLen] = useState(fullText.length)
-  const currentRef = useRef(fullText.length)
-  const targetRef = useRef(fullText.length)
-  const rafRef = useRef(0)
-  const lastTickRef = useRef(0)
+export function useStreamingRenderPool(
+  fullText: string,
+  isStreaming: boolean,
+  style: LiveOutputAnimationStyle = 'agile'
+): StreamingRenderPoolState {
+  const config = RENDER_POOL_CONFIG[style] ?? RENDER_POOL_CONFIG.agile
+  const targetLengthRef = useRef(fullText.length)
+  const renderedLengthRef = useRef(fullText.length)
+  const committedLengthRef = useRef(fullText.length)
+  const rafRef = useRef<number | null>(null)
+  const lastFlushAtRef = useRef(0)
+  const [renderedLength, setRenderedLength] = useState(fullText.length)
 
-  // Keep target in sync with actual content length (updated every render)
-  targetRef.current = fullText.length
+  useEffect(() => {
+    targetLengthRef.current = fullText.length
+  }, [fullText.length])
 
   useEffect(() => {
     if (!isStreaming) {
-      // Immediately reveal all text when streaming ends
-      cancelAnimationFrame(rafRef.current)
-      currentRef.current = fullText.length
-      setDisplayLen(fullText.length)
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      renderedLengthRef.current = fullText.length
       return
     }
 
+    if (renderedLengthRef.current > fullText.length) {
+      renderedLengthRef.current = fullText.length
+    }
+  }, [fullText.length, isStreaming])
+
+  useEffect(() => {
+    if (!isStreaming) return
+
+    lastFlushAtRef.current = 0
+
     const tick = (now: number): void => {
-      // Throttle to ~30 fps — markdown re-parsing is expensive
-      if (now - lastTickRef.current >= 33) {
-        lastTickRef.current = now
-        const target = targetRef.current
-        const cur = currentRef.current
-        if (cur < target) {
-          const gap = target - cur
-          // Adaptive easing: 12 % of remaining gap, floor 3 chars.
-          // At typical LLM speed (~150 chars/s) this gives a ~35-char
-          // natural buffer — about half a line of visible delay.
-          const step = Math.max(3, Math.ceil(gap * 0.12))
-          currentRef.current = Math.min(cur + step, target)
-          setDisplayLen(currentRef.current)
+      const lastFlushAt = lastFlushAtRef.current
+      const elapsedMs = lastFlushAt > 0 ? now - lastFlushAt : config.frameIntervalMs
+
+      if (elapsedMs >= config.frameIntervalMs) {
+        lastFlushAtRef.current = now
+        const targetLength = targetLengthRef.current
+        const currentLength = renderedLengthRef.current
+        const poolSize = Math.max(0, targetLength - currentLength)
+
+        if (poolSize > 0) {
+          const measureStart = performance.now()
+          const step = getCatchupStep(poolSize, elapsedMs, config)
+          const nextLength = Math.min(targetLength, currentLength + step)
+
+          renderedLengthRef.current = nextLength
+          committedLengthRef.current = nextLength
+          setRenderedLength(nextLength)
+          recordStreamingRenderPoolFlush(performance.now() - measureStart, {
+            poolSize,
+            step,
+            renderedLength: nextLength,
+            targetLength
+          })
+        } else if (committedLengthRef.current !== currentLength) {
+          committedLengthRef.current = currentLength
+          setRenderedLength(currentLength)
         }
       }
-      rafRef.current = requestAnimationFrame(tick)
+
+      rafRef.current = window.requestAnimationFrame(tick)
     }
 
-    rafRef.current = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafRef.current)
-    // Only restart the rAF loop when streaming state toggles.
-    // Target length is tracked via ref so no dependency needed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStreaming])
+    rafRef.current = window.requestAnimationFrame(tick)
+    return () => {
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
+  }, [config, isStreaming])
 
-  if (!isStreaming) return fullText
-  return fullText.slice(0, displayLen)
+  const safeRenderedLength = Math.min(renderedLength, fullText.length)
+  const poolSize = Math.max(0, fullText.length - safeRenderedLength)
+  const text = useMemo(() => {
+    if (!isStreaming) return fullText
+    return fullText.slice(0, safeRenderedLength)
+  }, [fullText, isStreaming, safeRenderedLength])
+
+  return {
+    text,
+    poolSize,
+    renderedLength: safeRenderedLength,
+    targetLength: fullText.length
+  }
+}
+
+export function useTypewriter(fullText: string, isStreaming: boolean): string {
+  return useStreamingRenderPool(fullText, isStreaming).text
 }

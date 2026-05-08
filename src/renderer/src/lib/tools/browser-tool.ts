@@ -3,6 +3,7 @@ import { toolRegistry } from '../agent/tool-registry'
 import { encodeStructuredToolResult, encodeToolError } from './tool-result-format'
 import type { ToolHandler } from './tool-types'
 import { useUIStore } from '../../stores/ui-store'
+import { getBrowserAccessDecision } from '../app-plugin/browser-access'
 
 function getWebview(): Electron.WebviewTag | null {
   return useUIStore.getState().browserWebviewRef?.current ?? null
@@ -40,6 +41,16 @@ async function waitForWebview(maxWaitMs = 3000): Promise<Electron.WebviewTag | n
   return null
 }
 
+function getBrowserAccessError(url: string): ToolResultContent | null {
+  const decision = getBrowserAccessDecision(url)
+  return decision.allowed ? null : encodeToolError(decision.reason ?? 'Browser navigation blocked.')
+}
+
+function getCurrentBrowserAccessError(): ToolResultContent | null {
+  const url = useUIStore.getState().browserUrl
+  return url ? getBrowserAccessError(url) : null
+}
+
 // ---------------------------------------------------------------------------
 // 1. BrowserNavigate
 // ---------------------------------------------------------------------------
@@ -59,11 +70,13 @@ const browserNavigateHandler: ToolHandler = {
       properties: {
         url: {
           type: 'string',
-          description: 'The URL to navigate to. Required when action is "goto". Example: "https://example.com" or "http://localhost:3000".'
+          description:
+            'The URL to navigate to. Required when action is "goto". Example: "https://example.com" or "http://localhost:3000".'
         },
         action: {
           type: 'string',
-          description: 'Navigation action: "goto" (default) opens a URL, "back"/"forward" navigate history, "refresh" reloads the current page.'
+          description:
+            'Navigation action: "goto" (default) opens a URL, "back"/"forward" navigate history, "refresh" reloads the current page.'
         }
       }
     }
@@ -78,6 +91,8 @@ const browserNavigateHandler: ToolHandler = {
       if (!/^https?:\/\//i.test(url) && !url.startsWith('http://localhost')) {
         url = `https://${url}`
       }
+      const accessError = getBrowserAccessError(url)
+      if (accessError) return accessError
       useUIStore.getState().openBrowserTab(url)
       const wv = await waitForWebview()
       if (wv) {
@@ -99,6 +114,8 @@ const browserNavigateHandler: ToolHandler = {
     } else if (action === 'forward') {
       wv.goForward()
     } else if (action === 'refresh') {
+      const accessError = getCurrentBrowserAccessError()
+      if (accessError) return accessError
       wv.reload()
     } else {
       return encodeToolError(`Unknown action "${action}". Use goto, back, forward, or refresh.`)
@@ -209,16 +226,20 @@ const browserGetContentHandler: ToolHandler = {
       properties: {
         selector: {
           type: 'string',
-          description: 'CSS selector to scope extraction to a specific element. Omit to extract the entire page body.'
+          description:
+            'CSS selector to scope extraction to a specific element. Omit to extract the entire page body.'
         },
         type: {
           type: 'string',
-          description: 'Output format: "markdown" (default) converts HTML to readable Markdown, "html" returns raw HTML source.'
+          description:
+            'Output format: "markdown" (default) converts HTML to readable Markdown, "html" returns raw HTML source.'
         }
       }
     }
   },
   execute: async (input) => {
+    const accessError = getCurrentBrowserAccessError()
+    if (accessError) return accessError
     const wv = requireWebview()
     const sel = (input.selector as string) || ''
     const outputType = (input.type as string) || 'markdown'
@@ -277,6 +298,8 @@ const browserScreenshotHandler: ToolHandler = {
     }
   },
   execute: async (): Promise<ToolResultContent> => {
+    const accessError = getCurrentBrowserAccessError()
+    if (accessError) return accessError
     const wv = requireWebview()
     const nativeImage = await wv.capturePage()
     if (nativeImage.isEmpty()) {
@@ -377,6 +400,8 @@ const browserSnapshotHandler: ToolHandler = {
     }
   },
   execute: async () => {
+    const accessError = getCurrentBrowserAccessError()
+    if (accessError) return accessError
     const wv = requireWebview()
     const raw = await wv.executeJavaScript(SNAPSHOT_SCRIPT)
     const parsed = JSON.parse(raw as string)
@@ -447,12 +472,12 @@ const browserClickHandler: ToolHandler = {
     }
   },
   execute: async (input) => {
+    const accessError = getCurrentBrowserAccessError()
+    if (accessError) return accessError
     const wv = requireWebview()
     const selector = input.selector as string
     if (!selector) return encodeToolError('"selector" is required')
-    const raw = await wv.executeJavaScript(
-      `${CLICK_SCRIPT}(${JSON.stringify(selector)})`
-    )
+    const raw = await wv.executeJavaScript(`${CLICK_SCRIPT}(${JSON.stringify(selector)})`)
     const parsed = JSON.parse(raw as string)
     if (parsed.error) return encodeToolError(parsed.error)
     await new Promise((r) => setTimeout(r, 300))
@@ -514,7 +539,8 @@ const browserTypeHandler: ToolHandler = {
       properties: {
         selector: {
           type: 'string',
-          description: 'CSS selector of the input element from BrowserSnapshot. Examples: "#search", "input[name=email]", "textarea:nth-of-type(1)".'
+          description:
+            'CSS selector of the input element from BrowserSnapshot. Examples: "#search", "input[name=email]", "textarea:nth-of-type(1)".'
         },
         text: {
           type: 'string',
@@ -533,6 +559,8 @@ const browserTypeHandler: ToolHandler = {
     }
   },
   execute: async (input) => {
+    const accessError = getCurrentBrowserAccessError()
+    if (accessError) return accessError
     const wv = requireWebview()
     const selector = input.selector as string
     const text = input.text as string
@@ -582,6 +610,8 @@ const browserScrollHandler: ToolHandler = {
     }
   },
   execute: async (input) => {
+    const accessError = getCurrentBrowserAccessError()
+    if (accessError) return accessError
     const wv = requireWebview()
     const direction = (input.direction as string) || 'down'
     const amount = typeof input.amount === 'number' ? input.amount : 0

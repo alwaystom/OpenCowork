@@ -196,12 +196,23 @@ interface ToolDefinition {
   inputSchema: ToolInputSchema
 }
 
+type ReasoningEffortLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'max' | 'xhigh'
+
+interface ThinkingConfig {
+  bodyParams: Record<string, unknown>
+  disabledBodyParams?: Record<string, unknown>
+  forceTemperature?: number
+  reasoningEffortLevels?: ReasoningEffortLevel[]
+  defaultReasoningEffort?: ReasoningEffortLevel
+}
+
 interface AIModelConfig {
   id: string
   enabled?: boolean
   type?: ProviderType
   category?: string
   maxOutputTokens?: number
+  thinkingConfig?: ThinkingConfig
   requestOverrides?: RequestOverrides
   responseSummary?: 'auto' | 'concise' | 'detailed'
   enablePromptCache?: boolean
@@ -249,6 +260,9 @@ interface ProviderConfig {
   maxTokens?: number
   temperature?: number
   systemPrompt?: string
+  thinkingEnabled?: boolean
+  thinkingConfig?: ThinkingConfig
+  reasoningEffort?: ReasoningEffortLevel
   category?: string
   providerId?: string
   providerBuiltinId?: string
@@ -431,6 +445,25 @@ function encodeStructuredToolResult(value: unknown): string {
 
 function encodeToolError(message: string): string {
   return encodeStructuredToolResult({ success: false, error: message })
+}
+
+function extractStructuredToolError(output: ToolResultContent): string | undefined {
+  if (typeof output !== 'string') return undefined
+
+  try {
+    const parsed = JSON.parse(output) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+
+    const record = parsed as Record<string, unknown>
+    const hasErrorOnlyShape = Object.keys(record).length === 1
+    if (typeof record.error === 'string' && (record.success === false || hasErrorOnlyShape)) {
+      return record.error
+    }
+  } catch {
+    // Non-JSON tool output is not a structured cron tool error.
+  }
+
+  return undefined
 }
 
 type SearchLimitReason = 'max_results' | 'max_output_bytes' | 'timeout' | 'max_depth' | null
@@ -700,6 +733,53 @@ function getEffectiveMaxTokens(
   return Math.min(userMaxTokens, model.maxOutputTokens)
 }
 
+function isReasoningEffortLevel(value: unknown): value is ReasoningEffortLevel {
+  return (
+    value === 'none' ||
+    value === 'minimal' ||
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'max' ||
+    value === 'xhigh'
+  )
+}
+
+function getReasoningEffortKey(providerId?: string | null, modelId?: string | null): string | null {
+  if (!providerId || !modelId) return null
+  return `${providerId}:${modelId}`
+}
+
+function resolveReasoningEffortForModel(args: {
+  reasoningEffort: ReasoningEffortLevel
+  reasoningEffortByModel?: Record<string, ReasoningEffortLevel>
+  providerId?: string | null
+  modelId?: string | null
+  thinkingConfig?: ThinkingConfig
+}): ReasoningEffortLevel {
+  const key = getReasoningEffortKey(args.providerId, args.modelId)
+  const levels = args.thinkingConfig?.reasoningEffortLevels
+  const savedEffort = key ? args.reasoningEffortByModel?.[key] : undefined
+
+  if (savedEffort && (!levels || levels.includes(savedEffort))) {
+    return savedEffort
+  }
+
+  return args.thinkingConfig?.defaultReasoningEffort ?? args.reasoningEffort
+}
+
+function readReasoningEffortByModel(
+  value: unknown
+): Record<string, ReasoningEffortLevel> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+
+  const entries = Object.entries(value)
+    .filter(([, raw]) => isReasoningEffortLevel(raw))
+    .map(([key, raw]) => [key, raw] as const)
+
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
 function buildProviderConfigById(
   state: ReturnType<typeof getPersistedProvidersState>,
   settings: Record<string, unknown>,
@@ -717,11 +797,25 @@ function buildProviderConfigById(
   )
   const websocketUrl = model?.websocketUrl ?? provider.websocketUrl
   const websocketMode = model?.websocketMode ?? provider.websocketMode
+  const thinkingConfig = model?.thinkingConfig
+  const baseReasoningEffort = isReasoningEffortLevel(settings.reasoningEffort)
+    ? settings.reasoningEffort
+    : 'medium'
+  const reasoningEffort = resolveReasoningEffortForModel({
+    reasoningEffort: baseReasoningEffort,
+    reasoningEffortByModel: readReasoningEffortByModel(settings.reasoningEffortByModel),
+    providerId: provider.id,
+    modelId,
+    thinkingConfig
+  })
   return {
     type: requestType,
     apiKey: provider.apiKey,
     baseUrl: provider.baseUrl ? normalizeProviderBaseUrl(provider.baseUrl, requestType) : undefined,
     model: modelId,
+    thinkingEnabled: settings.thinkingEnabled === true && !!thinkingConfig,
+    ...(thinkingConfig ? { thinkingConfig } : {}),
+    reasoningEffort,
     category: model?.category,
     providerId: provider.id,
     providerBuiltinId: provider.builtinId,
@@ -1468,12 +1562,107 @@ function formatOpenAIResponsesTools(tools: ToolDefinition[]): unknown[] {
   }))
 }
 
-function formatAnthropicMessages(messages: UnifiedMessage[]): unknown[] {
+function buildAnthropicCacheControl(): { type: 'ephemeral' } {
+  return { type: 'ephemeral' }
+}
+
+const MIN_ANTHROPIC_THINKING_BUDGET = 1024
+
+function normalizeAnthropicThinkingBodyParams(
+  bodyParams?: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  if (!bodyParams) return undefined
+
+  const nextBodyParams: Record<string, unknown> = { ...bodyParams }
+  const rawEnableThinking = nextBodyParams.enable_thinking
+  delete nextBodyParams.enable_thinking
+
+  if (!('thinking' in nextBodyParams) && typeof rawEnableThinking === 'boolean') {
+    nextBodyParams.thinking = rawEnableThinking
+      ? { type: 'enabled', budget_tokens: MIN_ANTHROPIC_THINKING_BUDGET }
+      : { type: 'disabled' }
+  }
+
+  const thinking = nextBodyParams.thinking
+  if (thinking && typeof thinking === 'object' && !Array.isArray(thinking)) {
+    const normalizedThinking = { ...(thinking as Record<string, unknown>) }
+    if (normalizedThinking.type === 'enabled' && normalizedThinking.budget_tokens === undefined) {
+      normalizedThinking.budget_tokens = MIN_ANTHROPIC_THINKING_BUDGET
+    }
+    nextBodyParams.thinking = normalizedThinking
+  }
+
+  return nextBodyParams
+}
+
+function readAnthropicThinkingBudgetFromBodyParams(
+  bodyParams?: Record<string, unknown>
+): number | undefined {
+  const normalizedBodyParams = normalizeAnthropicThinkingBodyParams(bodyParams)
+  const thinking = normalizedBodyParams?.thinking
+  if (!thinking || typeof thinking !== 'object' || Array.isArray(thinking)) return undefined
+
+  const budgetValue = (thinking as Record<string, unknown>).budget_tokens
+  const budgetTokens =
+    typeof budgetValue === 'number'
+      ? budgetValue
+      : typeof budgetValue === 'string'
+        ? Number(budgetValue)
+        : undefined
+
+  return Number.isFinite(budgetTokens) && budgetTokens != null && budgetTokens > 0
+    ? Math.floor(budgetTokens)
+    : undefined
+}
+
+function buildAnthropicThinkingBodyParams(
+  config: ProviderConfig
+): Record<string, unknown> | undefined {
+  const bodyParams = config.thinkingConfig?.bodyParams
+  if (!config.thinkingEnabled || !bodyParams) return undefined
+  return normalizeAnthropicThinkingBodyParams(bodyParams)
+}
+
+function buildAnthropicDisabledThinkingBodyParams(
+  config: ProviderConfig
+): Record<string, unknown> | undefined {
+  const bodyParams = config.thinkingConfig?.disabledBodyParams
+  if (config.thinkingEnabled || !bodyParams) return undefined
+  return normalizeAnthropicThinkingBodyParams(bodyParams)
+}
+
+function normalizeAnthropicThinkingRequestBody(body: Record<string, unknown>): void {
+  const normalized = normalizeAnthropicThinkingBodyParams(body)
+  if (!normalized) return
+
+  for (const key of Object.keys(body)) {
+    delete body[key]
+  }
+  Object.assign(body, normalized)
+}
+
+function formatAnthropicMessages(
+  messages: UnifiedMessage[],
+  promptCacheEnabled = false
+): unknown[] {
   return normalizeMessagesForReplay(messages)
     .filter((message) => message.role !== 'system')
     .map((message) => {
       if (typeof message.content === 'string') {
-        return { role: message.role, content: message.content }
+        if (!promptCacheEnabled || !message.content.trim()) {
+          return { role: message.role, content: message.content }
+        }
+
+        return {
+          role: message.role,
+          content: [
+            {
+              type: 'text',
+              text: message.content,
+              cache_control: buildAnthropicCacheControl()
+            }
+          ]
+        }
       }
       const blocks = message.content as ContentBlock[]
       return {
@@ -1490,25 +1679,57 @@ function formatAnthropicMessages(messages: UnifiedMessage[]): unknown[] {
                   : {})
               }
             case 'text':
-              return { type: 'text', text: block.text }
+              return {
+                type: 'text',
+                text: block.text,
+                ...(promptCacheEnabled && block.text.trim()
+                  ? { cache_control: buildAnthropicCacheControl() }
+                  : {})
+              }
             case 'tool_use':
               return { type: 'tool_use', id: block.id, name: block.name, input: block.input }
             case 'tool_result':
-              return { type: 'tool_result', tool_use_id: block.toolUseId, content: block.content }
+              return {
+                type: 'tool_result',
+                tool_use_id: block.toolUseId,
+                content: block.content,
+                ...(promptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {})
+              }
             case 'image':
-              return { type: 'image', source: block.source }
+              return {
+                type: 'image',
+                source: block.source,
+                ...(promptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {})
+              }
           }
         })
       }
     })
 }
 
-function formatAnthropicTools(tools: ToolDefinition[]): unknown[] {
-  return tools.map((tool) => ({
+function formatAnthropicTools(tools: ToolDefinition[], promptCacheEnabled = false): unknown[] {
+  return tools.map((tool, index) => ({
     name: tool.name,
     description: tool.description,
-    input_schema: normalizeToolSchema(tool.inputSchema)
+    input_schema: normalizeToolSchema(tool.inputSchema),
+    ...(promptCacheEnabled && index === tools.length - 1
+      ? { cache_control: buildAnthropicCacheControl() }
+      : {})
   }))
+}
+
+function formatAnthropicSystemPrompt(
+  systemPrompt?: string,
+  systemPromptCacheEnabled = false
+): Array<{ type: 'text'; text: string }> | undefined {
+  if (!systemPrompt) return undefined
+  return [
+    {
+      type: 'text',
+      text: systemPrompt,
+      ...(systemPromptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {})
+    }
+  ]
 }
 
 function normalizeToolSchema(schema: ToolInputSchema): Record<string, unknown> {
@@ -1575,6 +1796,36 @@ function resolveRequestAgent(
   return undefined
 }
 
+const REQUEST_BODY_MANAGED_HEADERS = new Set([
+  'connection',
+  'content-length',
+  'expect',
+  'host',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade'
+])
+
+function buildForwardHeaders(
+  headers: Record<string, string>,
+  bodyBuffer: Buffer | null
+): Record<string, string> {
+  const forwarded: Record<string, string> = {}
+  for (const [key, value] of Object.entries(headers)) {
+    if (value == null) continue
+    const stringValue = String(value)
+    if (!stringValue || /\r|\n/.test(stringValue)) continue
+    if (REQUEST_BODY_MANAGED_HEADERS.has(key.toLowerCase())) continue
+    forwarded[key] = stringValue
+  }
+  if (bodyBuffer) forwarded['Content-Length'] = String(bodyBuffer.byteLength)
+  return forwarded
+}
+
 async function sendFetchRequest(
   url: string,
   init: Record<string, unknown>,
@@ -1586,8 +1837,10 @@ async function sendFetchRequest(
   const httpModule = isHttps ? https : http
   const body = typeof init.body === 'string' ? init.body : undefined
   const bodyBuffer = body ? Buffer.from(body, 'utf-8') : null
-  const headers = { ...((init.headers as Record<string, string> | undefined) ?? {}) }
-  if (bodyBuffer) headers['Content-Length'] = String(bodyBuffer.byteLength)
+  const headers = buildForwardHeaders(
+    (init.headers as Record<string, string> | undefined) ?? {},
+    bodyBuffer
+  )
   const agent = resolveRequestAgent(targetUrl, useSystemProxy, allowInsecureTls)
 
   const response = await new Promise<FetchResponseLike>((resolve, reject) => {
@@ -1667,6 +1920,19 @@ async function* sendOpenAIChat(
       body.max_tokens = config.maxTokens
     }
   }
+
+  if (config.thinkingEnabled && config.thinkingConfig) {
+    Object.assign(body, config.thinkingConfig.bodyParams)
+    if (config.thinkingConfig.reasoningEffortLevels && config.reasoningEffort) {
+      body.reasoning_effort = config.reasoningEffort
+    }
+    if (config.thinkingConfig.forceTemperature !== undefined) {
+      body.temperature = config.thinkingConfig.forceTemperature
+    }
+  } else if (!config.thinkingEnabled && config.thinkingConfig?.disabledBodyParams) {
+    Object.assign(body, config.thinkingConfig.disabledBodyParams)
+  }
+
   applyBodyOverrides(body, config)
   if (typeof body.prompt_cache_key !== 'string' || !body.prompt_cache_key.trim()) {
     body.prompt_cache_key = getPromptCacheKey(config)
@@ -1866,27 +2132,90 @@ async function* sendAnthropic(
   const requestStartedAt = Date.now()
   let firstTokenAt: number | null = null
   let outputTokens = 0
+  const promptCacheEnabled = config.enablePromptCache !== false
+  const systemPromptCacheEnabled = config.enableSystemPromptCache !== false
+  const thinkingBodyParams = buildAnthropicThinkingBodyParams(config)
+  const disabledThinkingBodyParams = buildAnthropicDisabledThinkingBodyParams(config)
+  const resolveAnthropicEffort = (): 'low' | 'medium' | 'high' | 'max' | undefined => {
+    const levels = config.thinkingConfig?.reasoningEffortLevels
+    if (!levels || levels.length === 0) return undefined
+
+    const selected =
+      config.reasoningEffort && levels.includes(config.reasoningEffort)
+        ? config.reasoningEffort
+        : (config.thinkingConfig?.defaultReasoningEffort ?? levels[0])
+
+    switch (selected) {
+      case 'low':
+      case 'medium':
+      case 'high':
+      case 'max':
+        return selected
+      case 'xhigh':
+        return 'max'
+      default:
+        return undefined
+    }
+  }
+
+  const readAnthropicThinkingBudget = (): number | undefined => {
+    if (!config.thinkingEnabled) return undefined
+    return readAnthropicThinkingBudgetFromBodyParams(config.thinkingConfig?.bodyParams)
+  }
+
+  const resolveAnthropicMaxTokens = (): number => {
+    const configuredMaxTokens = Math.max(1, Math.floor(config.maxTokens ?? 32000))
+    const thinkingBudget = readAnthropicThinkingBudget()
+    return thinkingBudget != null
+      ? Math.max(configuredMaxTokens, thinkingBudget + 1)
+      : configuredMaxTokens
+  }
+
   const baseUrl = (config.baseUrl || 'https://api.anthropic.com').trim().replace(/\/+$/, '')
   const url = `${baseUrl}/v1/messages`
+  const system = formatAnthropicSystemPrompt(config.systemPrompt, systemPromptCacheEnabled)
   const body: Record<string, unknown> = {
     model: config.model,
-    system: config.systemPrompt,
-    messages: formatAnthropicMessages(messages),
-    max_tokens: config.maxTokens ?? 4096,
+    ...(promptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {}),
+    ...(system ? { system } : {}),
+    messages: formatAnthropicMessages(messages, promptCacheEnabled),
+    max_tokens: resolveAnthropicMaxTokens(),
     stream: true
   }
   if (tools.length > 0) {
-    body.tools = formatAnthropicTools(tools)
+    body.tools = formatAnthropicTools(tools, promptCacheEnabled)
   }
-  if (config.temperature !== undefined) body.temperature = config.temperature
+
+  if (thinkingBodyParams && config.thinkingConfig) {
+    Object.assign(body, thinkingBodyParams)
+    const effort = resolveAnthropicEffort()
+    if (effort) {
+      body.output_config = {
+        ...(typeof body.output_config === 'object' && body.output_config !== null
+          ? (body.output_config as Record<string, unknown>)
+          : {}),
+        effort
+      }
+    }
+    if (config.thinkingConfig.forceTemperature !== undefined) {
+      body.temperature = config.thinkingConfig.forceTemperature
+    }
+  } else if (disabledThinkingBodyParams) {
+    Object.assign(body, disabledThinkingBodyParams)
+  }
+
+  if (config.temperature !== undefined && body.temperature === undefined) {
+    body.temperature = config.temperature
+  }
   applyBodyOverrides(body, config)
+  normalizeAnthropicThinkingRequestBody(body)
 
   const maxTokens =
     typeof body.max_tokens === 'number'
       ? Math.max(1, Math.floor(body.max_tokens))
       : typeof body.max_tokens === 'string'
-        ? Math.max(1, Math.floor(Number(body.max_tokens) || (config.maxTokens ?? 4096)))
-        : Math.max(1, Math.floor(config.maxTokens ?? 4096))
+        ? Math.max(1, Math.floor(Number(body.max_tokens) || resolveAnthropicMaxTokens()))
+        : resolveAnthropicMaxTokens()
   body.max_tokens = maxTokens
 
   if (typeof body.thinking === 'object' && body.thinking !== null) {
@@ -1908,6 +2237,7 @@ async function* sendAnthropic(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'anthropic-version': '2023-06-01',
+    'anthropic-beta': 'prompt-caching-2024-07-31,interleaved-thinking-2025-05-14',
     'x-api-key': config.apiKey
   }
   if (config.userAgent) headers['User-Agent'] = config.userAgent
@@ -2080,7 +2410,7 @@ async function* sendOpenAIResponses(
   const url = `${baseUrl}/responses`
   const body: Record<string, unknown> = {
     model: config.model,
-    input: formatOpenAIResponsesMessages(messages, config.systemPrompt, true),
+    input: formatOpenAIResponsesMessages(messages, config.systemPrompt, !!config.thinkingEnabled),
     stream: true
   }
   const formattedTools = formatOpenAIResponsesTools(tools)
@@ -2098,6 +2428,41 @@ async function* sendOpenAIResponses(
   }
   if (config.temperature !== undefined) body.temperature = config.temperature
   if (config.maxTokens) body.max_output_tokens = config.maxTokens
+
+  if (config.thinkingEnabled && config.thinkingConfig) {
+    Object.assign(body, config.thinkingConfig.bodyParams)
+
+    const reasoning =
+      typeof body.reasoning === 'object' && body.reasoning !== null
+        ? { ...(body.reasoning as Record<string, unknown>) }
+        : {}
+
+    if (config.thinkingConfig.reasoningEffortLevels && config.reasoningEffort) {
+      reasoning.effort = config.reasoningEffort
+    }
+
+    if (body.model !== 'gpt-5.3-codex-spark') {
+      reasoning.summary = config.responseSummary ?? 'auto'
+    }
+    if (Object.keys(reasoning).length > 0) {
+      body.reasoning = reasoning
+    }
+
+    const include = Array.isArray(body.include)
+      ? (body.include as unknown[]).filter((item): item is string => typeof item === 'string')
+      : []
+    if (!include.includes('reasoning.encrypted_content')) {
+      include.push('reasoning.encrypted_content')
+    }
+    body.include = include
+
+    if (config.thinkingConfig.forceTemperature !== undefined) {
+      body.temperature = config.thinkingConfig.forceTemperature
+    }
+  } else if (!config.thinkingEnabled && config.thinkingConfig?.disabledBodyParams) {
+    Object.assign(body, config.thinkingConfig.disabledBodyParams)
+  }
+
   if (config.instructionsPrompt) {
     const instructions = await loadPromptContent(config.instructionsPrompt)
     if (instructions) {
@@ -2970,13 +3335,14 @@ async function* runAgentLoop(
         output = encodeToolError(toolError)
       }
       const completedAt = Date.now()
+      const resultError = toolError ?? extractStructuredToolError(output)
       yield {
         type: 'tool_call_result',
         toolCall: {
           ...toolCall,
-          status: toolError ? 'error' : 'completed',
+          status: resultError ? 'error' : 'completed',
           output,
-          ...(toolError ? { error: toolError } : {}),
+          ...(resultError ? { error: resultError } : {}),
           startedAt,
           completedAt
         }
@@ -2985,7 +3351,7 @@ async function* runAgentLoop(
         type: 'tool_result',
         toolUseId: toolCall.id,
         content: output,
-        ...(toolError ? { isError: true } : {})
+        ...(resultError ? { isError: true } : {})
       })
     }
     const toolResultMessage: UnifiedMessage = {
@@ -3354,9 +3720,76 @@ async function writeTextForCron(
   await fs.promises.writeFile(filePath, content, 'utf8')
 }
 
+type EolStyle = '\n' | '\r\n' | null
+
 function countOccurrences(content: string, value: string): number {
   if (!value) return 0
   return content.split(value).length - 1
+}
+
+function detectEolStyle(value: string): EolStyle {
+  if (value.includes('\r\n')) return '\r\n'
+  if (value.includes('\n')) return '\n'
+  return null
+}
+
+function detectDominantEolStyle(value: string): EolStyle {
+  let crlf = 0
+  let lf = 0
+
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === '\r' && value[index + 1] === '\n') {
+      crlf += 1
+      index += 1
+    } else if (value[index] === '\n') {
+      lf += 1
+    }
+  }
+
+  if (crlf === 0 && lf === 0) return null
+  return crlf >= lf ? '\r\n' : '\n'
+}
+
+function normalizeToLf(value: string): string {
+  return value.replace(/\r\n/g, '\n')
+}
+
+function applyEolStyle(value: string, style: EolStyle): string {
+  if (!style) return value
+  const normalized = normalizeToLf(value)
+  return style === '\n' ? normalized : normalized.replace(/\n/g, '\r\n')
+}
+
+function buildOldStringVariants(
+  oldStr: string,
+  fileContent: string
+): Array<{ text: string; eol: EolStyle }> {
+  const variants: Array<{ text: string; eol: EolStyle }> = []
+  const seen = new Set<string>()
+  const addVariant = (text: string, eol: EolStyle): void => {
+    if (seen.has(text)) return
+    seen.add(text)
+    variants.push({ text, eol })
+  }
+
+  addVariant(oldStr, detectEolStyle(oldStr))
+
+  if (oldStr.includes('\n')) {
+    const lfText = normalizeToLf(oldStr)
+    addVariant(lfText, '\n')
+    if (fileContent.includes('\r\n')) {
+      addVariant(lfText.replace(/\n/g, '\r\n'), '\r\n')
+    }
+  }
+
+  return variants
+}
+
+function getReplacementEolStyle(
+  matchedOldString: { eol: EolStyle },
+  fileContent: string
+): EolStyle {
+  return matchedOldString.eol ?? detectDominantEolStyle(fileContent)
 }
 
 function buildToolHandlers(): Record<string, ToolHandler> {
@@ -3385,7 +3818,7 @@ function buildToolHandlers(): Record<string, ToolHandler> {
       )
       const content = await readTextForCron(ctx, resolvedPath)
       if (input.offset !== undefined || input.limit !== undefined) {
-        const lines = content.split('\n')
+        const lines = content.split(/\r?\n/)
         const start = (Number(input.offset ?? 1) || 1) - 1
         const limit = Number(input.limit ?? lines.length)
         const end = Number.isFinite(limit) ? start + limit : lines.length
@@ -3476,7 +3909,15 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         return encodeToolError('new_string must be different from old_string')
       }
 
-      const occurrences = countOccurrences(content, oldStr)
+      const oldStringVariants = buildOldStringVariants(oldStr, content)
+      const matchedVariant = oldStringVariants.find(
+        (variant) => variant.text.length > 0 && content.includes(variant.text)
+      )
+      if (!matchedVariant) {
+        return encodeToolError('old_string not found in file')
+      }
+
+      const occurrences = countOccurrences(content, matchedVariant.text)
       if (occurrences === 0) {
         return encodeToolError('old_string not found in file')
       }
@@ -3484,9 +3925,10 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         return encodeToolError('old_string is not unique in file')
       }
 
+      const replacementText = applyEolStyle(newStr, getReplacementEolStyle(matchedVariant, content))
       const updated = replaceAll
-        ? content.split(oldStr).join(newStr)
-        : content.replace(oldStr, newStr)
+        ? content.split(matchedVariant.text).join(replacementText)
+        : content.replace(matchedVariant.text, replacementText)
 
       await writeTextForCron(ctx, resolvedPath, updated)
       return encodeStructuredToolResult({
@@ -4284,9 +4726,15 @@ function appendRunLog(
   content: string
 ): void {
   const db = getDb()
+  const nextSortOrder =
+    ((
+      db
+        .prepare('SELECT MAX(sort_order) AS value FROM cron_run_logs WHERE run_id = ?')
+        .get(runId) as { value?: number | null }
+    )?.value ?? -1) + 1
   db.prepare(
-    'INSERT INTO cron_run_logs (id, run_id, timestamp, type, content) VALUES (?, ?, ?, ?, ?)'
-  ).run(`log-${nanoid(8)}`, runId, timestamp, type, content)
+    'INSERT INTO cron_run_logs (id, run_id, timestamp, type, content, sort_order) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(`log-${nanoid(8)}`, runId, timestamp, type, content, nextSortOrder)
 }
 
 function emitRunStarted(jobId: string, runId: string): void {

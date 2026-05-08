@@ -358,6 +358,8 @@ export function DrawPage(): React.JSX.Element {
   const [gifStylePrompt, setGifStylePrompt] = useState('')
   const [gifActionPrompt, setGifActionPrompt] = useState('')
   const [runs, setRuns] = useState<DrawRun[]>([])
+  // Keep a synchronous snapshot so stream callbacks persist the same run state they render.
+  const runsRef = useRef<DrawRun[]>([])
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
   const [isOptimizingPrompt, setIsOptimizingPrompt] = useState(false)
@@ -367,6 +369,20 @@ export function DrawPage(): React.JSX.Element {
   const [dialogProviderId, setDialogProviderId] = useState<string | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const commitRuns = useCallback(
+    (updater: DrawRun[] | ((current: DrawRun[]) => DrawRun[])): DrawRun[] => {
+      const nextRuns =
+        typeof updater === 'function'
+          ? (updater as (current: DrawRun[]) => DrawRun[])(runsRef.current)
+          : updater
+
+      runsRef.current = nextRuns
+      setRuns(nextRuns)
+      return nextRuns
+    },
+    []
+  )
 
   const providerModelGroups = useMemo<ProviderModelGroup[]>(
     () =>
@@ -431,7 +447,7 @@ export function DrawPage(): React.JSX.Element {
     void listPersistedDrawRuns(t('drawPage.interrupted'))
       .then((persistedRuns) => {
         if (!cancelled) {
-          setRuns(persistedRuns)
+          commitRuns(persistedRuns)
         }
       })
       .catch(() => {})
@@ -439,7 +455,7 @@ export function DrawPage(): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [t])
+  }, [commitRuns, t])
 
   useEffect(() => {
     if (!modelDialogOpen) return
@@ -509,7 +525,7 @@ export function DrawPage(): React.JSX.Element {
     (runId: string, updater: (run: DrawRun) => DrawRun): void => {
       let nextRun: DrawRun | null = null
 
-      setRuns((current) =>
+      commitRuns((current) =>
         current.map((run) => {
           if (run.id !== runId) return run
           nextRun = updater(run)
@@ -521,7 +537,7 @@ export function DrawPage(): React.JSX.Element {
         persistRun(nextRun)
       }
     },
-    [persistRun]
+    [commitRuns, persistRun]
   )
 
   const finishRun = useCallback(
@@ -589,15 +605,18 @@ export function DrawPage(): React.JSX.Element {
     setAttachedImages((current) => current.filter((image) => image.id !== imageId))
   }, [])
 
-  const handleDeleteRun = useCallback((runId: string): void => {
-    setRuns((current) => current.filter((run) => run.id !== runId))
-    void deletePersistedDrawRun(runId)
-  }, [])
+  const handleDeleteRun = useCallback(
+    (runId: string): void => {
+      commitRuns((current) => current.filter((run) => run.id !== runId))
+      void deletePersistedDrawRun(runId)
+    },
+    [commitRuns]
+  )
 
   const handleClearHistory = useCallback((): void => {
-    setRuns([])
+    commitRuns([])
     void clearPersistedDrawRuns()
-  }, [])
+  }, [commitRuns])
 
   const handleSelectModel = useCallback(
     (value: string): void => {
@@ -779,7 +798,7 @@ export function DrawPage(): React.JSX.Element {
 
     abortControllerRef.current = controller
     setIsGenerating(true)
-    setRuns((current) => [newRun, ...current])
+    commitRuns((current) => [newRun, ...current])
     persistRun(newRun)
 
     const provider = createProvider(target.config)
@@ -890,7 +909,8 @@ export function DrawPage(): React.JSX.Element {
     prompt,
     resolveGenerationTarget,
     t,
-    updateRun
+    updateRun,
+    commitRuns
   ])
 
   const generateGifRun = useCallback(
@@ -966,7 +986,7 @@ export function DrawPage(): React.JSX.Element {
 
       abortControllerRef.current = controller
       setIsGenerating(true)
-      setRuns((current) => [newRun, ...current])
+      commitRuns((current) => [newRun, ...current])
       persistRun(newRun)
 
       const providerConfig = buildGifProviderConfig(target.config)
@@ -1126,7 +1146,8 @@ export function DrawPage(): React.JSX.Element {
       postprocessGifGrid,
       resolveGenerationTarget,
       t,
-      updateRun
+      updateRun,
+      commitRuns
     ]
   )
 

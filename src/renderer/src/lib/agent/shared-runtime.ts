@@ -35,6 +35,7 @@ export interface SharedAgentRuntimeHookArgs {
 }
 
 export interface SharedAgentRuntimeOptions {
+  runId?: string
   initialMessages: UnifiedMessage[]
   loopConfig: AgentLoopConfig
   toolContext: ToolContext
@@ -72,8 +73,15 @@ function runCleanup(cleanup: (() => void) | null): void {
 export async function runSharedAgentRuntime(
   options: SharedAgentRuntimeOptions
 ): Promise<SharedAgentRuntimeResult> {
-  const { initialMessages, loopConfig, toolContext, isReadOnlyTool, onApprovalNeeded, hooks } =
-    options
+  const {
+    runId,
+    initialMessages,
+    loopConfig,
+    toolContext,
+    isReadOnlyTool,
+    onApprovalNeeded,
+    hooks
+  } = options
 
   const state: SharedAgentRuntimeState = {
     iteration: 0,
@@ -118,6 +126,7 @@ export async function runSharedAgentRuntime(
       messages: initialMessages,
       provider: loopConfig.provider,
       tools: loopConfig.tools,
+      ...(runId ? { runId } : {}),
       sessionId: toolContext.sessionId,
       workingFolder: toolContext.workingFolder ?? loopConfig.workingFolder,
       maxIterations: loopConfig.maxIterations,

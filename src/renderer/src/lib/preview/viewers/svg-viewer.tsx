@@ -1,14 +1,7 @@
-import * as React from 'react'
-import ReactMarkdown from 'react-markdown'
 import { CodeEditor } from '@renderer/components/editor/CodeEditor'
 import type { ViewerProps } from '../viewer-registry'
-import {
-  createMarkdownComponents,
-  MARKDOWN_REHYPE_PLUGINS,
-  MARKDOWN_REMARK_PLUGINS
-} from './markdown-components'
 
-export function MarkdownViewer({
+export function SvgViewer({
   filePath,
   content,
   viewMode,
@@ -33,15 +26,16 @@ export function MarkdownViewer({
   }
 
   return (
-    <div className="size-full overflow-y-auto p-6">
-      <div className="prose prose-sm dark:prose-invert max-w-none">
-        <ReactMarkdown
-          remarkPlugins={MARKDOWN_REMARK_PLUGINS}
-          rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-          components={createMarkdownComponents(filePath)}
-        >
-          {content}
-        </ReactMarkdown>
+    <div className="flex size-full flex-col bg-background">
+      <div className="flex-1 overflow-auto bg-[repeating-conic-gradient(hsl(var(--muted))_0%_25%,transparent_0%_50%)] bg-[length:16px_16px] p-6">
+        <div className="flex min-h-full items-center justify-center">
+          <iframe
+            className="h-full min-h-[360px] w-full rounded-lg border border-border/60 bg-white shadow-sm"
+            sandbox=""
+            srcDoc={content}
+            title="SVG Preview"
+          />
+        </div>
       </div>
     </div>
   )

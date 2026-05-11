@@ -55,6 +55,74 @@ interface SessionConversationPaneProps {
   windowHeaderOwnsTitle?: boolean
 }
 
+const EXPORT_IMAGE_PLACEHOLDER_DATA_URL =
+  'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA='
+
+function isRemoteImageSrc(value: string | null): value is string {
+  return typeof value === 'string' && /^https?:\/\//i.test(value)
+}
+
+async function waitForExportImageReady(image: HTMLImageElement): Promise<void> {
+  if (image.complete && image.naturalWidth > 0) return
+
+  await new Promise<void>((resolve) => {
+    const cleanup = (): void => {
+      image.removeEventListener('load', handleDone)
+      image.removeEventListener('error', handleDone)
+    }
+
+    const handleDone = (): void => {
+      cleanup()
+      resolve()
+    }
+
+    image.addEventListener('load', handleDone, { once: true })
+    image.addEventListener('error', handleDone, { once: true })
+  })
+}
+
+async function inlineRemoteImagesForExport(root: HTMLElement): Promise<void> {
+  const images = Array.from(root.querySelectorAll('img'))
+  if (images.length === 0) return
+
+  const dataUrlCache = new Map<string, string>()
+
+  await Promise.all(
+    images.map(async (image) => {
+      const src = image.getAttribute('src')?.trim() || ''
+      if (!src) return
+
+      image.removeAttribute('srcset')
+
+      if (!isRemoteImageSrc(src)) {
+        await waitForExportImageReady(image)
+        return
+      }
+
+      let dataUrl = dataUrlCache.get(src)
+      if (!dataUrl) {
+        try {
+          const result = (await window.api.fetchImageBase64({ url: src })) as {
+            data?: string
+            mimeType?: string
+            error?: string
+          }
+          if (result.error) throw new Error(result.error)
+          dataUrl = result.data
+            ? `data:${result.mimeType || 'image/png'};base64,${result.data}`
+            : EXPORT_IMAGE_PLACEHOLDER_DATA_URL
+        } catch {
+          dataUrl = EXPORT_IMAGE_PLACEHOLDER_DATA_URL
+        }
+        dataUrlCache.set(src, dataUrl)
+      }
+
+      image.setAttribute('src', dataUrl)
+      await waitForExportImageReady(image)
+    })
+  )
+}
+
 export function SessionConversationPane({
   sessionId,
   allowOpenInNewWindow = true,
@@ -105,7 +173,8 @@ export function SessionConversationPane({
     continueLastToolExecution,
     retryLastMessage,
     editAndResend,
-    deleteMessage
+    deleteMessage,
+    manualCompressContext
   } = useChatActions()
   const updateSessionTitle = useChatStore((state) => state.updateSessionTitle)
   const clearSessionMessages = useChatStore((state) => state.clearSessionMessages)
@@ -193,29 +262,60 @@ export function SessionConversationPane({
         throw new Error('Export target not found')
       }
 
-      const bgRaw = getComputedStyle(document.documentElement)
-        .getPropertyValue('--background')
-        .trim()
-      const bgColor = bgRaw ? `hsl(${bgRaw})` : '#ffffff'
-      const { toPng } = await import('html-to-image')
-      const captureWidth = node.clientWidth
-      const captureHeight = Math.max(node.scrollHeight, node.offsetHeight)
-      const dataUrl = await toPng(node, {
-        backgroundColor: bgColor,
-        pixelRatio: 2,
-        width: captureWidth,
-        height: captureHeight,
-        canvasWidth: captureWidth * 2,
-        canvasHeight: captureHeight * 2,
-        style: {
-          overflow: 'visible',
-          maxWidth: `${captureWidth}px`,
-          width: `${captureWidth}px`,
-          height: `${captureHeight}px`
-        }
-      })
+      const exportStage = document.createElement('div')
+      exportStage.setAttribute('data-export-image-stage', '')
+      exportStage.style.cssText = [
+        'position: fixed',
+        'left: -100000px',
+        'top: 0',
+        'opacity: 0',
+        'pointer-events: none',
+        `width: ${node.clientWidth}px`
+      ].join(';')
 
-      await writeImageBlobToClipboard(dataUrlToBlob(dataUrl))
+      const exportNode = node.cloneNode(true) as HTMLElement
+      exportStage.appendChild(exportNode)
+      document.body.appendChild(exportStage)
+
+      try {
+        await inlineRemoteImagesForExport(exportNode)
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => resolve())
+          })
+        })
+
+        const bgRaw = getComputedStyle(document.documentElement)
+          .getPropertyValue('--background')
+          .trim()
+        const bgColor = bgRaw ? `hsl(${bgRaw})` : '#ffffff'
+        const { toPng } = await import('html-to-image')
+        const captureWidth = node.clientWidth
+        const captureHeight = Math.max(
+          exportNode.scrollHeight,
+          exportNode.offsetHeight,
+          node.scrollHeight,
+          node.offsetHeight
+        )
+        const dataUrl = await toPng(exportNode, {
+          backgroundColor: bgColor,
+          pixelRatio: 2,
+          width: captureWidth,
+          height: captureHeight,
+          canvasWidth: captureWidth * 2,
+          canvasHeight: captureHeight * 2,
+          style: {
+            overflow: 'visible',
+            maxWidth: `${captureWidth}px`,
+            width: `${captureWidth}px`,
+            height: `${captureHeight}px`
+          }
+        })
+
+        await writeImageBlobToClipboard(dataUrlToBlob(dataUrl))
+      } finally {
+        exportStage.remove()
+      }
       toast.success(t('layout.imageCopied', { defaultValue: 'Image copied to clipboard' }))
     } catch (error) {
       console.error('Export image failed:', error)
@@ -505,6 +605,7 @@ export function SessionConversationPane({
           onSelectFolder={sessionView.projectId ? () => setFolderDialogOpen(true) : undefined}
           workingFolder={sessionView.workingFolder}
           hideWorkingFolderIndicator
+          onCompressContext={manualCompressContext}
           isStreaming={isStreaming}
         />
         {sessionView.projectId &&

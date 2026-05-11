@@ -6,23 +6,26 @@ import { getBrowserAccessDecision } from '@renderer/lib/app-plugin/browser-acces
 import { useTranslation } from 'react-i18next'
 import { BUILTIN_BROWSER_PARTITION } from '../../../../shared/browser-plugin'
 
-export function BrowserPanel(): React.JSX.Element {
+export function BrowserPanel({
+  sessionId = null
+}: {
+  sessionId?: string | null
+}): React.JSX.Element {
   const { t } = useTranslation('layout')
 
-  const storedUrl = useUIStore((s) => s.browserUrl)
+  const storedUrl = useUIStore((s) => s.getBrowserState(sessionId).url)
   const setBrowserUrl = useUIStore((s) => s.setBrowserUrl)
-  const loading = useUIStore((s) => s.browserLoading)
+  const loading = useUIStore((s) => s.getBrowserState(sessionId).loading)
   const setBrowserLoading = useUIStore((s) => s.setBrowserLoading)
   const setBrowserPageTitle = useUIStore((s) => s.setBrowserPageTitle)
-  const canGoBack = useUIStore((s) => s.browserCanGoBack)
+  const canGoBack = useUIStore((s) => s.getBrowserState(sessionId).canGoBack)
   const setBrowserCanGoBack = useUIStore((s) => s.setBrowserCanGoBack)
-  const canGoForward = useUIStore((s) => s.browserCanGoForward)
+  const canGoForward = useUIStore((s) => s.getBrowserState(sessionId).canGoForward)
   const setBrowserCanGoForward = useUIStore((s) => s.setBrowserCanGoForward)
-  const errorInfo = useUIStore((s) => s.browserErrorInfo)
+  const errorInfo = useUIStore((s) => s.getBrowserState(sessionId).errorInfo)
   const setBrowserErrorInfo = useUIStore((s) => s.setBrowserErrorInfo)
   const setBrowserWebviewRef = useUIStore((s) => s.setBrowserWebviewRef)
 
-  const [lastSeenStoredUrl, setLastSeenStoredUrl] = useState(storedUrl)
   const [inputUrl, setInputUrl] = useState(storedUrl)
   const [committedUrl, setCommittedUrl] = useState(storedUrl)
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
@@ -32,15 +35,17 @@ export function BrowserPanel(): React.JSX.Element {
   }
 
   useEffect(() => {
-    setBrowserWebviewRef(webviewRef)
-    return () => setBrowserWebviewRef(null)
-  }, [setBrowserWebviewRef])
+    setBrowserWebviewRef(webviewRef, sessionId)
+    return () => {
+      setBrowserWebviewRef(null, sessionId)
+      setBrowserLoading(false, sessionId)
+    }
+  }, [sessionId, setBrowserLoading, setBrowserWebviewRef])
 
-  if (storedUrl !== lastSeenStoredUrl && storedUrl) {
-    setLastSeenStoredUrl(storedUrl)
+  useEffect(() => {
     setInputUrl(storedUrl)
     setCommittedUrl(storedUrl)
-  }
+  }, [storedUrl])
 
   const normalizeUrl = (url: string): string => {
     let normalized = url.trim()
@@ -53,14 +58,17 @@ export function BrowserPanel(): React.JSX.Element {
 
   const blockNavigation = useCallback(
     (url: string, reason?: string): void => {
-      setBrowserErrorInfo({
-        code: -10,
-        desc: reason ?? 'Blocked by browser plugin domain rules',
-        url
-      })
-      setBrowserLoading(false)
+      setBrowserErrorInfo(
+        {
+          code: -10,
+          desc: reason ?? 'Blocked by browser plugin domain rules',
+          url
+        },
+        sessionId
+      )
+      setBrowserLoading(false, sessionId)
     },
-    [setBrowserErrorInfo, setBrowserLoading]
+    [sessionId, setBrowserErrorInfo, setBrowserLoading]
   )
 
   const canNavigateTo = useCallback(
@@ -80,14 +88,14 @@ export function BrowserPanel(): React.JSX.Element {
       setInputUrl(normalized)
       if (!canNavigateTo(normalized)) return
       setCommittedUrl(normalized)
-      setBrowserUrl(normalized)
-      setBrowserErrorInfo(null)
+      setBrowserUrl(normalized, sessionId)
+      setBrowserErrorInfo(null, sessionId)
       const wv = webviewRef.current
       if (wv) {
         wv.src = normalized
       }
     },
-    [canNavigateTo, setBrowserUrl, setBrowserErrorInfo]
+    [canNavigateTo, sessionId, setBrowserUrl, setBrowserErrorInfo]
   )
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
@@ -97,44 +105,47 @@ export function BrowserPanel(): React.JSX.Element {
   const updateNavState = useCallback(() => {
     const wv = webviewRef.current
     if (!wv) return
-    setBrowserCanGoBack(wv.canGoBack())
-    setBrowserCanGoForward(wv.canGoForward())
-  }, [setBrowserCanGoBack, setBrowserCanGoForward])
+    setBrowserCanGoBack(wv.canGoBack(), sessionId)
+    setBrowserCanGoForward(wv.canGoForward(), sessionId)
+  }, [sessionId, setBrowserCanGoBack, setBrowserCanGoForward])
 
   useEffect(() => {
     const wv = webviewRef.current
     if (!wv) return
 
     const onStartLoading = (): void => {
-      setBrowserLoading(true)
-      setBrowserErrorInfo(null)
+      setBrowserLoading(true, sessionId)
+      setBrowserErrorInfo(null, sessionId)
     }
 
     const onStopLoading = (): void => {
-      setBrowserLoading(false)
+      setBrowserLoading(false, sessionId)
       updateNavState()
     }
 
     const onNavigate = (e: Electron.DidNavigateEvent): void => {
       setInputUrl(e.url)
-      setBrowserUrl(e.url)
+      setBrowserUrl(e.url, sessionId)
       updateNavState()
     }
 
     const onNavigateInPage = (e: Electron.DidNavigateInPageEvent): void => {
       setInputUrl(e.url)
-      setBrowserUrl(e.url)
+      setBrowserUrl(e.url, sessionId)
       updateNavState()
     }
 
     const onTitleUpdated = (e: Electron.PageTitleUpdatedEvent): void => {
-      setBrowserPageTitle(e.title)
+      setBrowserPageTitle(e.title, sessionId)
     }
 
     const onFailLoad = (e: Electron.DidFailLoadEvent): void => {
       if (!e.isMainFrame || e.errorCode === -3) return
-      setBrowserErrorInfo({ code: e.errorCode, desc: e.errorDescription, url: e.validatedURL })
-      setBrowserLoading(false)
+      setBrowserErrorInfo(
+        { code: e.errorCode, desc: e.errorDescription, url: e.validatedURL },
+        sessionId
+      )
+      setBrowserLoading(false, sessionId)
     }
 
     const onWillNavigate = (e: Event & { url?: string; preventDefault: () => void }): void => {
@@ -170,6 +181,7 @@ export function BrowserPanel(): React.JSX.Element {
   }, [
     canNavigateTo,
     committedUrl,
+    sessionId,
     setBrowserLoading,
     setBrowserErrorInfo,
     setBrowserUrl,
@@ -275,7 +287,7 @@ export function BrowserPanel(): React.JSX.Element {
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  setBrowserErrorInfo(null)
+                  setBrowserErrorInfo(null, sessionId)
                   webviewRef.current?.reload()
                 }}
               >

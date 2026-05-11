@@ -13,6 +13,9 @@ export default defineConfig({
   },
   preload: {},
   renderer: {
+    optimizeDeps: {
+      include: ['@monaco-editor/react', '@monaco-editor/loader']
+    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src')

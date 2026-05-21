@@ -498,9 +498,7 @@ export function InlineStepsPanel({
       if (
         changeSet.sessionId !== resolvedSessionId ||
         aggregateDisplayableRunFileChanges(changeSet.changes).length === 0 ||
-        (changeSet.status !== 'open' &&
-          changeSet.status !== 'partial' &&
-          changeSet.status !== 'conflicted')
+        changeSet.status !== 'open'
       ) {
         continue
       }

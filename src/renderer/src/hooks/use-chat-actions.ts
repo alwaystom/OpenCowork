@@ -4608,7 +4608,9 @@ export function useChatActions(): {
                       event.toolCall.status === 'completed' &&
                       (event.toolCall.name === 'Write' || event.toolCall.name === 'Edit')
                     ) {
-                      void useAgentStore.getState().refreshRunChanges(assistantMsgId)
+                      void useAgentStore.getState().refreshRunChanges(assistantMsgId, {
+                        sessionId
+                      })
                     }
                   }
                   if (event.toolCall.status === 'completed' || event.toolCall.status === 'error') {
@@ -5374,7 +5376,9 @@ export function useChatActions(): {
               resumedAssistantMessageId &&
               (toolUse.name === 'Write' || toolUse.name === 'Edit')
             ) {
-              void agentStore.refreshRunChanges(resumedAssistantMessageId)
+              void agentStore.refreshRunChanges(resumedAssistantMessageId, {
+                sessionId
+              })
             }
 
             toolResultsById.set(toolUse.id, { content: output, isError })

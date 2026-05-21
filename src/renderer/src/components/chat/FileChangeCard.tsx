@@ -757,7 +757,10 @@ function SnapshotSummaryNotice({
     <div className="space-y-3 px-3 py-3 text-[11px] text-muted-foreground dark:text-zinc-400">
       <div className="space-y-1">
         <p>Large file snapshot summarized to avoid storing full before/after text in memory.</p>
-        <p className="font-mono text-[10px] text-muted-foreground/70 dark:text-zinc-600" style={{ fontFamily: MONO_FONT }}>
+        <p
+          className="font-mono text-[10px] text-muted-foreground/70 dark:text-zinc-600"
+          style={{ fontFamily: MONO_FONT }}
+        >
           {details}
         </p>
       </div>
@@ -798,7 +801,10 @@ function PendingEditPreview({ input }: { input: Record<string, unknown> }): Reac
     <div className="space-y-2 px-3 py-3 text-[11px] text-foreground/85 dark:text-zinc-300">
       <div className="flex flex-wrap items-center gap-2">
         {filePath && !hasDiffPreview && (
-          <span className="font-mono text-[10px] text-muted-foreground dark:text-zinc-500" style={{ fontFamily: MONO_FONT }}>
+          <span
+            className="font-mono text-[10px] text-muted-foreground dark:text-zinc-500"
+            style={{ fontFamily: MONO_FONT }}
+          >
             {shortPath(filePath)}
           </span>
         )}
@@ -808,16 +814,16 @@ function PendingEditPreview({ input }: { input: Record<string, unknown> }): Reac
           </span>
         )}
       </div>
-      {explanation && <p className="text-[11px] text-muted-foreground dark:text-zinc-400">{explanation}</p>}
+      {explanation && (
+        <p className="text-[11px] text-muted-foreground dark:text-zinc-400">{explanation}</p>
+      )}
       {showingExcerpt && (
-        <p className="text-[10px] text-muted-foreground/70 dark:text-zinc-600">{t('fileChange.showingExcerpt')}</p>
+        <p className="text-[10px] text-muted-foreground/70 dark:text-zinc-600">
+          {t('fileChange.showingExcerpt')}
+        </p>
       )}
       {hasDiffPreview && (
-        <CompactEditDiff
-          oldStr={oldPreview || ''}
-          newStr={newPreview || ''}
-          filePath={filePath}
-        />
+        <CompactEditDiff oldStr={oldPreview || ''} newStr={newPreview || ''} filePath={filePath} />
       )}
     </div>
   )
@@ -1066,9 +1072,7 @@ function resolveEditSummaryDiff(
 }
 
 function trackedStatusLabelKey(change: AgentRunFileChange): string {
-  if (change.status === 'accepted') return 'fileChange.status.accepted'
   if (change.status === 'reverted') return 'fileChange.status.reverted'
-  if (change.status === 'conflicted') return 'fileChange.status.conflict'
   return 'fileChange.status.pending'
 }
 
@@ -1077,20 +1081,15 @@ function trackedTransportLabelKey(change: AgentRunFileChange): string {
 }
 
 function trackedStatusTone(change: AgentRunFileChange): string {
-  if (change.status === 'accepted')
-    return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-500'
   if (change.status === 'reverted')
     return 'bg-muted text-foreground/70 dark:bg-zinc-500/10 dark:text-zinc-300'
-  if (change.status === 'conflicted') return 'bg-amber-500/10 text-amber-600 dark:text-amber-500'
   return change.transport === 'ssh'
     ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
     : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
 }
 
 function trackedStatusDotTone(change: AgentRunFileChange): string {
-  if (change.status === 'accepted') return 'bg-emerald-400'
   if (change.status === 'reverted') return 'bg-zinc-500'
-  if (change.status === 'conflicted') return 'bg-amber-400'
   return change.transport === 'ssh' ? 'bg-sky-400' : 'bg-zinc-400'
 }
 
@@ -1111,17 +1110,14 @@ export function FileChangeCard({
   const resolvedWrite = React.useMemo(() => resolveWritePayload(input), [input])
   const isActive = status === 'streaming' || status === 'running' || status === 'pending_approval'
   const [collapsed, setCollapsed] = React.useState(!isActive)
-  const acceptFileChange = useAgentStore((state) => state.acceptFileChange)
-  const rollbackFileChange = useAgentStore((state) => state.rollbackFileChange)
-  const [isAcceptingFile, setIsAcceptingFile] = React.useState(false)
-  const [isRollingBackFile, setIsRollingBackFile] = React.useState(false)
+  const undoFileChange = useAgentStore((state) => state.undoFileChange)
+  const [isUndoingFile, setIsUndoingFile] = React.useState(false)
 
   const filePath = String(input.file_path ?? input.path ?? '')
   const elapsed =
     startedAt && completedAt ? ((completedAt - startedAt) / 1000).toFixed(1) + 's' : null
   const outputStr = typeof output === 'string' ? output : undefined
-  const isFileActionable =
-    trackedChange?.status === 'open' || trackedChange?.status === 'conflicted'
+  const isFileActionable = trackedChange?.status === 'open'
   const parsedOutput = outputStr ? decodeStructuredToolResult(outputStr) : null
   const parsedOutputError =
     parsedOutput && !Array.isArray(parsedOutput) && typeof parsedOutput.error === 'string'
@@ -1230,33 +1226,21 @@ export function FileChangeCard({
         ? 'border-blue-500/30'
         : status === 'error' || (isOutputError && !isSuccess)
           ? 'border-destructive/30'
-          : trackedChange?.status === 'conflicted'
-            ? 'border-amber-500/30'
-            : trackedChange?.status === 'accepted'
-              ? 'border-emerald-500/20'
-              : name === 'Write'
-                ? 'border-green-500/20'
-                : name === 'Delete'
-                  ? 'border-red-500/20'
-                  : 'border-amber-500/20'
+          : trackedChange?.status === 'reverted'
+            ? 'border-muted-foreground/20'
+            : name === 'Write'
+              ? 'border-green-500/20'
+              : name === 'Delete'
+                ? 'border-red-500/20'
+                : 'border-amber-500/20'
 
-  const handleAcceptFile = async (): Promise<void> => {
+  const handleUndoFile = async (): Promise<void> => {
     if (!trackedChange || !isFileActionable) return
-    setIsAcceptingFile(true)
+    setIsUndoingFile(true)
     try {
-      await acceptFileChange(trackedChange.runId, trackedChange.id)
+      await undoFileChange(trackedChange.runId, trackedChange.id)
     } finally {
-      setIsAcceptingFile(false)
-    }
-  }
-
-  const handleRollbackFile = async (): Promise<void> => {
-    if (!trackedChange || !isFileActionable) return
-    setIsRollingBackFile(true)
-    try {
-      await rollbackFileChange(trackedChange.runId, trackedChange.id)
-    } finally {
-      setIsRollingBackFile(false)
+      setIsUndoingFile(false)
     }
   }
 
@@ -1341,7 +1325,9 @@ export function FileChangeCard({
               <CompactStatusDot status={status} />
             )}
             {elapsed && (
-              <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground/70">{elapsed}</span>
+              <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground/70">
+                {elapsed}
+              </span>
             )}
             {collapsed ? (
               <ChevronRight className="size-3 shrink-0 text-muted-foreground/70" />
@@ -1383,7 +1369,9 @@ export function FileChangeCard({
               </span>
             )}
             {elapsed && (
-              <span className="text-[9px] text-muted-foreground/70 tabular-nums shrink-0">{elapsed}</span>
+              <span className="text-[9px] text-muted-foreground/70 tabular-nums shrink-0">
+                {elapsed}
+              </span>
             )}
             <StatusIndicator status={status} />
           </>
@@ -1468,52 +1456,22 @@ export function FileChangeCard({
         >
           <div className="flex items-center justify-between gap-2">
             <p className="text-[10px] text-muted-foreground">
-              {trackedChange.status === 'accepted'
-                ? t('fileChange.kept')
-                : trackedChange.status === 'reverted'
-                  ? t('fileChange.restored')
-                  : trackedChange.status === 'conflicted'
-                    ? (trackedChange.conflict ?? t('fileChange.rollbackConflictDefault'))
-                    : t('fileChange.individualActions')}
+              {trackedChange.status === 'reverted'
+                ? t('fileChange.restored')
+                : t('fileChange.individualActions')}
             </p>
             <div className="flex items-center gap-2">
               <Button
                 type="button"
                 size="xs"
-                variant={useCompactChangeLayout ? 'ghost' : 'outline'}
+                variant={useCompactChangeLayout ? 'ghost' : 'destructive'}
                 className={
-                  useCompactChangeLayout
-                    ? 'text-emerald-600 hover:bg-zinc-100 dark:text-emerald-300 dark:hover:bg-white/[0.04]'
-                    : undefined
+                  useCompactChangeLayout ? 'text-zinc-200 hover:bg-white/[0.04]' : undefined
                 }
-                onClick={handleAcceptFile}
-                disabled={!isFileActionable || isAcceptingFile || isRollingBackFile}
+                onClick={handleUndoFile}
+                disabled={!isFileActionable || isUndoingFile}
               >
-                {isAcceptingFile ? <Loader2 className="size-3 animate-spin" /> : null}
-                {t('action.allow', { ns: 'common' })}
-              </Button>
-              <Button
-                type="button"
-                size="xs"
-                variant={
-                  useCompactChangeLayout
-                    ? 'ghost'
-                    : trackedChange.status === 'conflicted'
-                      ? 'outline'
-                      : 'destructive'
-                }
-                className={
-                  useCompactChangeLayout
-                    ? cn(
-                        'hover:bg-white/[0.04]',
-                        trackedChange.status === 'conflicted' ? 'text-amber-300' : 'text-zinc-200'
-                      )
-                    : undefined
-                }
-                onClick={handleRollbackFile}
-                disabled={!isFileActionable || isAcceptingFile || isRollingBackFile}
-              >
-                {isRollingBackFile ? <Loader2 className="size-3 animate-spin" /> : null}
+                {isUndoingFile ? <Loader2 className="size-3 animate-spin" /> : null}
                 {t('action.undo', { ns: 'common' })}
               </Button>
             </div>

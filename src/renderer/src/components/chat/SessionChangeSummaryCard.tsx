@@ -2,21 +2,11 @@ import * as React from 'react'
 import { ChevronDown, ChevronUp, FileCode, Loader2, RotateCcw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { MONO_FONT } from '@renderer/lib/constants'
-import {
-  useAgentStore,
-  type AgentRunChangeSet,
-  type AgentRunFileChange
-} from '@renderer/stores/agent-store'
+import { useAgentStore, type AgentRunChangeSet } from '@renderer/stores/agent-store'
 import { useUIStore } from '@renderer/stores/ui-store'
-import type { ToolUseBlock, UnifiedMessage } from '@renderer/lib/api/types'
-import { decodeStructuredToolResult } from '@renderer/lib/tools/tool-result-format'
+import type { UnifiedMessage } from '@renderer/lib/api/types'
 import { useAggregatedChangeSummaries } from './change-summary-utils'
-import {
-  actionableSourceChanges,
-  aggregateDisplayableRunFileChanges,
-  lineCount,
-  type AggregatedFileChange
-} from './file-change-utils'
+import { aggregateDisplayableRunFileChanges, type AggregatedFileChange } from './file-change-utils'
 
 interface SessionChangeSummaryCardProps {
   sessionId?: string | null
@@ -26,205 +16,68 @@ interface SessionChangeSummaryCardProps {
 }
 
 const DEFAULT_EXPANDED_FILE_LIMIT = 4
-const SYNTHETIC_CHANGE_PREFIX = 'message-tool-change:'
 
 function changeSetMatchesSession(
   changeSet: AgentRunChangeSet,
   sessionId: string | null | undefined,
-  assistantMessageIds: Set<string>,
-  toolUseIds: Set<string>
+  assistantMessageIds: Set<string>
 ): boolean {
   return (
     (!!sessionId &&
       (changeSet.sessionId === sessionId ||
         changeSet.changes.some((change) => change.sessionId === sessionId))) ||
     assistantMessageIds.has(changeSet.assistantMessageId) ||
-    assistantMessageIds.has(changeSet.runId) ||
-    changeSet.changes.some((change) => change.toolUseId && toolUseIds.has(change.toolUseId))
+    assistantMessageIds.has(changeSet.runId)
   )
 }
 
 function useSessionChangeSets({
   sessionId,
-  assistantMessageIds = [],
-  toolUseIds = []
+  assistantMessageIds = []
 }: SessionChangeSummaryCardProps): AgentRunChangeSet[] {
   const runChangesByRunId = useAgentStore((state) => state.runChangesByRunId)
 
   return React.useMemo(() => {
     const assistantMessageIdSet = new Set(assistantMessageIds)
-    const toolUseIdSet = new Set(toolUseIds)
     const seen = new Set<string>()
 
     return Object.values(runChangesByRunId)
       .filter((changeSet) => {
         if (seen.has(changeSet.runId)) return false
         seen.add(changeSet.runId)
-        return changeSetMatchesSession(changeSet, sessionId, assistantMessageIdSet, toolUseIdSet)
+        return changeSetMatchesSession(changeSet, sessionId, assistantMessageIdSet)
       })
       .sort((left, right) => left.createdAt - right.createdAt)
-  }, [assistantMessageIds, runChangesByRunId, sessionId, toolUseIds])
-}
-
-function getMessageToolResultMap(
-  messages: readonly UnifiedMessage[]
-): Map<string, { isError?: boolean; content?: unknown }> {
-  const results = new Map<string, { isError?: boolean; content?: unknown }>()
-  for (const message of messages) {
-    if (!Array.isArray(message.content)) continue
-    for (const block of message.content) {
-      if (!block || typeof block !== 'object' || block.type !== 'tool_result') continue
-      results.set(block.toolUseId, {
-        isError: block.isError,
-        content: block.content
-      })
-    }
-  }
-  return results
-}
-
-function getToolFilePath(block: ToolUseBlock): string {
-  const value = block.input.file_path ?? block.input.path
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function parseToolResult(content: unknown): Record<string, unknown> | null {
-  if (typeof content !== 'string') return null
-  const parsed = decodeStructuredToolResult(content)
-  return parsed && !Array.isArray(parsed) ? parsed : null
-}
-
-function buildSnapshot(text: string, exists = true): AgentRunFileChange['after'] {
-  const size = new TextEncoder().encode(text).length
-  return {
-    exists,
-    text,
-    hash: null,
-    size,
-    lineCount: lineCount(text)
-  }
-}
-
-function buildSyntheticMessageToolChanges(
-  messages: readonly UnifiedMessage[],
-  sessionId: string
-): AgentRunFileChange[] {
-  const resultsByToolUseId = getMessageToolResultMap(messages)
-  const changes: AgentRunFileChange[] = []
-
-  for (const message of messages) {
-    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue
-
-    for (const block of message.content) {
-      if (!block || typeof block !== 'object' || block.type !== 'tool_use') continue
-      if (block.name !== 'Edit' && block.name !== 'Write') continue
-
-      const filePath = getToolFilePath(block)
-      if (!filePath) continue
-
-      const result = resultsByToolUseId.get(block.id)
-      const parsedResult = parseToolResult(result?.content)
-      if (result?.isError || typeof parsedResult?.error === 'string') continue
-
-      const createdAt = message.createdAt ?? Date.now()
-      const id = `${SYNTHETIC_CHANGE_PREFIX}${message.id}:${block.id}`
-      const baseChange = {
-        id,
-        runId: id,
-        sessionId,
-        toolUseId: block.id,
-        toolName: block.name,
-        filePath,
-        transport: 'local' as const,
-        status: 'accepted' as const,
-        createdAt
-      }
-
-      if (block.name === 'Edit') {
-        const beforeText =
-          typeof block.input.old_string === 'string'
-            ? block.input.old_string
-            : typeof block.input.old_string_preview === 'string'
-              ? block.input.old_string_preview
-              : ''
-        const afterText =
-          typeof block.input.new_string === 'string'
-            ? block.input.new_string
-            : typeof block.input.new_string_preview === 'string'
-              ? block.input.new_string_preview
-              : ''
-
-        if (!beforeText && !afterText) continue
-
-        changes.push({
-          ...baseChange,
-          op: 'modify',
-          before: buildSnapshot(beforeText),
-          after: buildSnapshot(afterText)
-        })
-        continue
-      }
-
-      const afterText =
-        typeof block.input.content === 'string'
-          ? block.input.content
-          : typeof block.input.content_preview === 'string'
-            ? block.input.content_preview
-            : ''
-      const op = parsedResult?.op === 'modify' ? 'modify' : 'create'
-      changes.push({
-        ...baseChange,
-        op,
-        before: buildSnapshot('', op === 'modify'),
-        after: buildSnapshot(afterText)
-      })
-    }
-  }
-
-  return changes
-}
-
-function changeGroupKey(
-  change: Pick<AggregatedFileChange, 'filePath' | 'transport' | 'connectionId'>
-): string {
-  return [change.transport, change.connectionId ?? '', change.filePath].join('\u0000')
+  }, [assistantMessageIds, runChangesByRunId, sessionId])
 }
 
 export function SessionChangeSummaryCard({
   sessionId,
-  assistantMessageIds = [],
-  messages = [],
-  toolUseIds = []
+  assistantMessageIds = []
 }: SessionChangeSummaryCardProps): React.JSX.Element | null {
   const { t } = useTranslation(['chat', 'common'])
   const refreshSessionRunChanges = useAgentStore((state) => state.refreshSessionRunChanges)
-  const rollbackFileChange = useAgentStore((state) => state.rollbackFileChange)
+  const undoFileChange = useAgentStore((state) => state.undoFileChange)
+  const undoRunChanges = useAgentStore((state) => state.undoRunChanges)
   const openDetailPanel = useUIStore((state) => state.openDetailPanel)
-  const changeSets = useSessionChangeSets({ sessionId, assistantMessageIds, toolUseIds })
-  const [isRollingBack, setIsRollingBack] = React.useState(false)
+  const changeSets = useSessionChangeSets({ sessionId, assistantMessageIds })
+  const [isUndoing, setIsUndoing] = React.useState(false)
+  const requestedRefreshKeyRef = React.useRef<string | null>(null)
 
   React.useEffect(() => {
     if (!sessionId) return
-    void refreshSessionRunChanges(sessionId, {
-      ...(assistantMessageIds.length > 0 ? { assistantMessageIds: [...assistantMessageIds] } : {}),
-      ...(toolUseIds.length > 0 ? { toolUseIds: [...toolUseIds] } : {})
-    })
-  }, [assistantMessageIds, refreshSessionRunChanges, sessionId, toolUseIds])
+    if (requestedRefreshKeyRef.current === sessionId) return
+    requestedRefreshKeyRef.current = sessionId
+    void refreshSessionRunChanges(sessionId)
+  }, [refreshSessionRunChanges, sessionId])
 
-  const aggregatedChanges = React.useMemo(() => {
-    const trackedChanges = aggregateDisplayableRunFileChanges(
-      changeSets.flatMap((changeSet) => changeSet.changes)
-    )
-    const trackedKeys = new Set(trackedChanges.map(changeGroupKey))
-    const syntheticChanges = sessionId
-      ? aggregateDisplayableRunFileChanges(buildSyntheticMessageToolChanges(messages, sessionId))
-      : []
-
-    return [
-      ...trackedChanges,
-      ...syntheticChanges.filter((change) => !trackedKeys.has(changeGroupKey(change)))
-    ].sort((left, right) => left.createdAt - right.createdAt)
-  }, [changeSets, messages, sessionId])
+  const aggregatedChanges = React.useMemo(
+    () =>
+      aggregateDisplayableRunFileChanges(changeSets.flatMap((changeSet) => changeSet.changes)).sort(
+        (left, right) => left.createdAt - right.createdAt
+      ),
+    [changeSets]
+  )
   const summariesByChangeId = useAggregatedChangeSummaries(aggregatedChanges)
   const summary = React.useMemo(
     () =>
@@ -240,10 +93,18 @@ export function SessionChangeSummaryCard({
       ),
     [aggregatedChanges, summariesByChangeId]
   )
-  const actionableChanges = React.useMemo(
-    () => aggregatedChanges.flatMap((change) => actionableSourceChanges(change)),
-    [aggregatedChanges]
+  const undoableRunIds = React.useMemo(
+    () =>
+      Array.from(
+        new Set(
+          changeSets
+            .filter((changeSet) => changeSet.changes.some((change) => change.status === 'open'))
+            .map((changeSet) => changeSet.runId)
+        )
+      ),
+    [changeSets]
   )
+  const canUndo = undoableRunIds.length > 0
   const canCollapseFileList = aggregatedChanges.length > DEFAULT_EXPANDED_FILE_LIMIT
   const [fileListState, setFileListState] = React.useState(() => ({
     changeCount: aggregatedChanges.length,
@@ -274,42 +135,66 @@ export function SessionChangeSummaryCard({
     })
   }
 
-  const handleRollback = async (): Promise<void> => {
-    setIsRollingBack(true)
+  const handleUndoAll = async (): Promise<void> => {
+    if (undoableRunIds.length === 0) return
+    setIsUndoing(true)
     try {
-      for (const change of [...actionableChanges].sort((a, b) => b.createdAt - a.createdAt)) {
-        await rollbackFileChange(change.runId, change.id)
+      for (const runId of undoableRunIds) {
+        await undoRunChanges(runId)
       }
     } finally {
-      setIsRollingBack(false)
+      setIsUndoing(false)
     }
   }
 
   const renderChangeRow = (change: AggregatedFileChange): React.JSX.Element => {
     const stats = summariesByChangeId[change.id] ?? { added: 0, deleted: 0 }
+    const reverted = change.status === 'reverted'
+    const lastSource = change.sourceChanges[change.sourceChanges.length - 1]
+    const undoTargetRunId = lastSource?.runId ?? change.runId
+    const undoTargetChangeId = lastSource?.id ?? change.lastChangeId
 
     return (
-      <button
+      <div
         key={change.id}
-        type="button"
-        className="group flex min-h-9 w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-muted/35"
+        className="group flex min-h-9 w-full items-center gap-3 px-4 py-2 transition-colors hover:bg-muted/35"
         title={change.filePath}
-        onClick={handleOpenReview}
       >
-        <span
-          className="min-w-0 flex-1 truncate text-[13px] text-foreground/90"
-          style={{ fontFamily: MONO_FONT }}
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+          onClick={handleOpenReview}
         >
-          {change.filePath}
-        </span>
-        <span className="shrink-0 text-[12px] font-medium text-emerald-600 dark:text-emerald-300">
-          +{stats.added}
-        </span>
-        <span className="shrink-0 text-[12px] font-medium text-red-600 dark:text-red-300">
-          -{stats.deleted}
-        </span>
-        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground/55 transition-colors group-hover:text-foreground" />
-      </button>
+          <span
+            className="min-w-0 flex-1 truncate text-[13px] text-foreground/90"
+            style={{ fontFamily: MONO_FONT }}
+          >
+            {change.filePath}
+          </span>
+          <span className="shrink-0 text-[12px] font-medium text-emerald-600 dark:text-emerald-300">
+            +{stats.added}
+          </span>
+          <span className="shrink-0 text-[12px] font-medium text-red-600 dark:text-red-300">
+            -{stats.deleted}
+          </span>
+        </button>
+        {reverted ? (
+          <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+            {t('fileChange.status.reverted')}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
+            onClick={() => void undoFileChange(undoTargetRunId, undoTargetChangeId)}
+            disabled={isUndoing}
+            title={t('action.undo', { ns: 'common' })}
+            aria-label={t('action.undo', { ns: 'common' })}
+          >
+            <RotateCcw className="size-3" />
+          </button>
+        )}
+      </div>
     )
   }
 
@@ -339,10 +224,11 @@ export function SessionChangeSummaryCard({
           <button
             type="button"
             className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
-            onClick={() => void handleRollback()}
-            disabled={actionableChanges.length === 0 || isRollingBack}
+            onClick={() => void handleUndoAll()}
+            disabled={!canUndo || isUndoing}
+            title={t('action.undo', { ns: 'common' })}
           >
-            {isRollingBack ? (
+            {isUndoing ? (
               <Loader2 className="size-3 animate-spin" />
             ) : (
               <RotateCcw className="size-3" />

@@ -304,6 +304,50 @@ export function getDb(): Database.Database {
       ON messages(session_id, sort_order);
   `)
 
+  // --- Agent change journal ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_change_sets (
+      run_id TEXT PRIMARY KEY,
+      session_id TEXT,
+      assistant_message_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_file_changes (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      session_id TEXT,
+      tool_use_id TEXT,
+      tool_name TEXT,
+      file_path TEXT NOT NULL,
+      transport TEXT NOT NULL,
+      connection_id TEXT,
+      op TEXT NOT NULL,
+      status TEXT NOT NULL,
+      before_json TEXT NOT NULL,
+      after_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      accepted_at INTEGER,
+      reverted_at INTEGER,
+      conflict TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (run_id) REFERENCES agent_change_sets(run_id) ON DELETE CASCADE,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_change_sets_session
+      ON agent_change_sets(session_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_file_changes_run
+      ON agent_file_changes(run_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_agent_file_changes_session
+      ON agent_file_changes(session_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_file_changes_tool_use
+      ON agent_file_changes(tool_use_id);
+  `)
+
   // --- Session Goals table ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS session_goals (

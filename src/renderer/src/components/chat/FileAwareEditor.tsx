@@ -456,6 +456,12 @@ export const FileAwareEditor = React.forwardRef<FileAwareEditorHandle, FileAware
     const focusedRef = React.useRef(false)
     const selectionSyncFrameRef = React.useRef<number | null>(null)
     const documentSyncFrameRef = React.useRef<number | null>(null)
+    const isComposingRef = React.useRef(false)
+    const pendingRenderAfterCompositionRef = React.useRef(false)
+    const [compositionRenderVersion, bumpCompositionRenderVersion] = React.useReducer(
+      (version: number) => version + 1,
+      0
+    )
     const handlersRef = React.useRef<
       Pick<FileAwareEditorProps, 'onReferencePreview' | 'onReferenceLocate' | 'onReferenceDelete'>
     >({})
@@ -514,7 +520,19 @@ export const FileAwareEditor = React.forwardRef<FileAwareEditorHandle, FileAware
       ref,
       () => ({
         focus: () => {
-          editorRef.current?.focus()
+          const root = editorRef.current
+          if (!root) return
+          root.focus()
+          focusedRef.current = true
+          const selection = window.getSelection()
+          const hasEditorSelection =
+            selection &&
+            selection.rangeCount > 0 &&
+            root.contains(selection.getRangeAt(0).startContainer) &&
+            root.contains(selection.getRangeAt(0).endContainer)
+          if (!hasEditorSelection) {
+            setSelectionOffsets(root, selectionRef.current.start, selectionRef.current.end)
+          }
         },
         focusAtEnd: () => {
           const root = editorRef.current
@@ -568,6 +586,11 @@ export const FileAwareEditor = React.forwardRef<FileAwareEditorHandle, FileAware
       const root = editorRef.current
       if (!root) return
 
+      if (isComposingRef.current) {
+        pendingRenderAfterCompositionRef.current = true
+        return
+      }
+
       const currentDocument = parseDomToDocument(root)
       const highlightChanged = lastRenderedHighlightRef.current !== highlightedFileId
       const shouldRender = highlightChanged || !isSameDocument(currentDocument, document)
@@ -585,7 +608,7 @@ export const FileAwareEditor = React.forwardRef<FileAwareEditorHandle, FileAware
       if (!focusedRef.current) return
       const selection = selectionRef.current
       setSelectionOffsets(root, selection.start, selection.end)
-    }, [document, files, highlightedFileId])
+    }, [compositionRenderVersion, document, files, highlightedFileId])
 
     const flushDocumentSync = React.useCallback(() => {
       const root = editorRef.current
@@ -596,36 +619,42 @@ export const FileAwareEditor = React.forwardRef<FileAwareEditorHandle, FileAware
       }
     }, [document, onDocumentChange])
 
-    const scheduleDocumentSync = React.useCallback(() => {
-      if (documentSyncFrameRef.current !== null) {
-        return
-      }
-      documentSyncFrameRef.current = window.requestAnimationFrame(() => {
-        documentSyncFrameRef.current = null
+    const handleInput = React.useCallback(
+      (event: React.FormEvent<HTMLDivElement>) => {
+        const nativeEvent = event.nativeEvent as Event & { isComposing?: boolean }
+        if (isComposingRef.current || nativeEvent.isComposing) {
+          return
+        }
+
+        syncSelection()
+        if (documentSyncFrameRef.current !== null) {
+          window.cancelAnimationFrame(documentSyncFrameRef.current)
+          documentSyncFrameRef.current = null
+        }
         flushDocumentSync()
-      })
-    }, [flushDocumentSync])
+      },
+      [flushDocumentSync, syncSelection]
+    )
 
-    const syncDocumentAndSelection = React.useCallback(() => {
-      syncSelection()
-      scheduleDocumentSync()
-    }, [scheduleDocumentSync, syncSelection])
-
-    const handleInput = React.useCallback(() => {
-      syncSelection()
-      if (documentSyncFrameRef.current !== null) {
-        window.cancelAnimationFrame(documentSyncFrameRef.current)
-        documentSyncFrameRef.current = null
-      }
-      flushDocumentSync()
-    }, [flushDocumentSync, syncSelection])
+    const handleCompositionStartInternal = React.useCallback(
+      (event: React.CompositionEvent<HTMLDivElement>) => {
+        isComposingRef.current = true
+        if (documentSyncFrameRef.current !== null) {
+          window.cancelAnimationFrame(documentSyncFrameRef.current)
+          documentSyncFrameRef.current = null
+        }
+        onCompositionStart?.(event)
+      },
+      [onCompositionStart]
+    )
 
     const handleCompositionUpdateInternal = React.useCallback(() => {
-      syncDocumentAndSelection()
-    }, [syncDocumentAndSelection])
+      pendingRenderAfterCompositionRef.current = true
+    }, [])
 
     const handleCompositionEndInternal = React.useCallback(
       (event: React.CompositionEvent<HTMLDivElement>) => {
+        isComposingRef.current = false
         onCompositionEnd?.(event)
         if (documentSyncFrameRef.current !== null) {
           window.cancelAnimationFrame(documentSyncFrameRef.current)
@@ -633,6 +662,10 @@ export const FileAwareEditor = React.forwardRef<FileAwareEditorHandle, FileAware
         }
         flushDocumentSync()
         scheduleSelectionSync()
+        if (pendingRenderAfterCompositionRef.current) {
+          pendingRenderAfterCompositionRef.current = false
+          bumpCompositionRenderVersion()
+        }
       },
       [flushDocumentSync, onCompositionEnd, scheduleSelectionSync]
     )
@@ -677,6 +710,7 @@ export const FileAwareEditor = React.forwardRef<FileAwareEditorHandle, FileAware
           }}
           onBlur={() => {
             focusedRef.current = false
+            isComposingRef.current = false
             onBlur?.()
           }}
           onClick={() => {
@@ -702,7 +736,7 @@ export const FileAwareEditor = React.forwardRef<FileAwareEditorHandle, FileAware
             suggestionOverlayRef.current.scrollTop = event.currentTarget.scrollTop
             suggestionOverlayRef.current.scrollLeft = event.currentTarget.scrollLeft
           }}
-          onCompositionStart={onCompositionStart}
+          onCompositionStart={handleCompositionStartInternal}
           onCompositionUpdate={handleCompositionUpdateInternal}
           onCompositionEnd={handleCompositionEndInternal}
           role="textbox"

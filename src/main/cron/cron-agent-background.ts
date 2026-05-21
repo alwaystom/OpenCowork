@@ -13,6 +13,11 @@ import { HttpsProxyAgent } from 'https-proxy-agent'
 import { readConfig } from '../ipc/secure-key-store'
 import { readSettings } from '../ipc/settings-handlers'
 import { showSystemNotification } from '../ipc/notify-handlers'
+import {
+  buildFileSnapshot,
+  recordLocalTextWriteChange,
+  recordSshTextWriteChange
+} from '../ipc/agent-change-handlers'
 import type {
   ToolCallState,
   InteractiveAgentEvent,
@@ -5167,6 +5172,51 @@ async function writeTextForCron(
   await fs.promises.writeFile(filePath, content, 'utf8')
 }
 
+function buildCronChangeMeta(
+  ctx: ToolContext,
+  toolName: 'Write' | 'Edit'
+): { runId: string; sessionId?: string; toolUseId?: string; toolName: string } | null {
+  const runId = ctx.agentRunId?.trim()
+  if (!runId) return null
+  return {
+    runId,
+    ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+    ...(ctx.currentToolUseId ? { toolUseId: ctx.currentToolUseId } : {}),
+    toolName
+  }
+}
+
+function recordCronTextWriteChange(args: {
+  ctx: ToolContext
+  toolName: 'Write' | 'Edit'
+  filePath: string
+  beforeExists: boolean
+  beforeText?: string
+  afterText: string
+}): void {
+  const meta = buildCronChangeMeta(args.ctx, args.toolName)
+  if (!meta) return
+
+  if (args.ctx.sshConnectionId) {
+    recordSshTextWriteChange({
+      meta,
+      connectionId: args.ctx.sshConnectionId,
+      filePath: args.filePath,
+      before: buildFileSnapshot(args.beforeExists, args.beforeText),
+      afterText: args.afterText
+    })
+    return
+  }
+
+  recordLocalTextWriteChange({
+    meta,
+    filePath: args.filePath,
+    beforeExists: args.beforeExists,
+    beforeText: args.beforeText,
+    afterText: args.afterText
+  })
+}
+
 type EolStyle = '\n' | '\r\n' | null
 
 function countOccurrences(content: string, value: string): number {
@@ -5300,6 +5350,7 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         ctx.workingFolder,
         !!ctx.sshConnectionId
       )
+      const nextContent = String(input.content ?? '')
       const beforeExists = ctx.sshConnectionId
         ? (
             await sshExecForCron(
@@ -5312,7 +5363,23 @@ function buildToolHandlers(): Record<string, ToolHandler> {
             .access(resolvedPath)
             .then(() => true)
             .catch(() => false)
-      await writeTextForCron(ctx, resolvedPath, String(input.content ?? ''))
+      let beforeText: string | undefined
+      if (beforeExists) {
+        try {
+          beforeText = await readTextForCron(ctx, resolvedPath)
+        } catch {
+          // best-effort: keep the write path unblocked if the preimage read fails
+        }
+      }
+      await writeTextForCron(ctx, resolvedPath, nextContent)
+      recordCronTextWriteChange({
+        ctx,
+        toolName: 'Write',
+        filePath: resolvedPath,
+        beforeExists,
+        beforeText,
+        afterText: nextContent
+      })
       return encodeStructuredToolResult({
         success: true,
         path: resolvedPath,
@@ -5378,6 +5445,14 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         : content.replace(matchedVariant.text, replacementText)
 
       await writeTextForCron(ctx, resolvedPath, updated)
+      recordCronTextWriteChange({
+        ctx,
+        toolName: 'Edit',
+        filePath: resolvedPath,
+        beforeExists: true,
+        beforeText: content,
+        afterText: updated
+      })
       return encodeStructuredToolResult({
         success: true,
         path: resolvedPath,

@@ -1,16 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import {
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  Copy,
-  FileCode,
-  Loader2,
-  RotateCcw,
-  X,
-  XCircle
-} from 'lucide-react'
+import { Check, ChevronDown, Copy, FileCode, Loader2, RotateCcw, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Sheet, SheetContent } from '@renderer/components/ui/sheet'
 import { MONO_FONT } from '@renderer/lib/constants'
@@ -55,32 +45,16 @@ function actionLabelKey(change: AggregatedFileChange): 'fileChange.new' | 'fileC
   return change.op === 'create' ? 'fileChange.new' : 'fileChange.edited'
 }
 
-function isActionableChange(change: AggregatedFileChange): boolean {
-  return actionableSourceChanges(change).length > 0
-}
-
 function statusLabelKey(
   change: AggregatedFileChange
-):
-  | 'fileChange.status.accepted'
-  | 'fileChange.status.reverted'
-  | 'fileChange.status.conflict'
-  | 'fileChange.status.pending' {
-  if (change.status === 'accepted') return 'fileChange.status.accepted'
+): 'fileChange.status.reverted' | 'fileChange.status.pending' {
   if (change.status === 'reverted') return 'fileChange.status.reverted'
-  if (change.status === 'conflicted') return 'fileChange.status.conflict'
   return 'fileChange.status.pending'
 }
 
 function statusTone(change: AggregatedFileChange): string {
-  if (change.status === 'accepted') {
-    return 'text-emerald-600 dark:text-emerald-300'
-  }
   if (change.status === 'reverted') {
     return 'text-muted-foreground dark:text-zinc-300'
-  }
-  if (change.status === 'conflicted') {
-    return 'text-amber-600 dark:text-amber-300'
   }
   return 'text-sky-600 dark:text-sky-300'
 }
@@ -303,34 +277,20 @@ function ChangeRow({
   onToggle: () => void
 }): React.JSX.Element {
   const { t } = useTranslation(['chat', 'common'])
-  const acceptFileChange = useAgentStore((state) => state.acceptFileChange)
-  const rollbackFileChange = useAgentStore((state) => state.rollbackFileChange)
-  const [isAccepting, setIsAccepting] = React.useState(false)
-  const [isRollingBack, setIsRollingBack] = React.useState(false)
+  const undoFileChange = useAgentStore((state) => state.undoFileChange)
+  const [isUndoing, setIsUndoing] = React.useState(false)
   const actionableChanges = React.useMemo(() => actionableSourceChanges(change), [change])
-  const actionable = isActionableChange(change)
+  const actionable = actionableChanges.length > 0
 
-  const handleAccept = async (): Promise<void> => {
+  const handleUndo = async (): Promise<void> => {
     if (!actionable) return
-    setIsAccepting(true)
-    try {
-      for (const entry of actionableChanges) {
-        await acceptFileChange(entry.runId, entry.id)
-      }
-    } finally {
-      setIsAccepting(false)
-    }
-  }
-
-  const handleRollback = async (): Promise<void> => {
-    if (!actionable) return
-    setIsRollingBack(true)
+    setIsUndoing(true)
     try {
       for (const entry of [...actionableChanges].reverse()) {
-        await rollbackFileChange(entry.runId, entry.id)
+        await undoFileChange(entry.runId, entry.id)
       }
     } finally {
-      setIsRollingBack(false)
+      setIsUndoing(false)
     }
   }
 
@@ -380,46 +340,20 @@ function ChangeRow({
         </button>
 
         {actionable ? (
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              type="button"
-              size="icon-xs"
-              variant="ghost"
-              className="rounded-full text-muted-foreground hover:bg-muted hover:text-foreground dark:text-zinc-500 dark:hover:bg-white/[0.03] dark:hover:text-white"
-              onClick={() => void handleRollback()}
-              disabled={isAccepting || isRollingBack}
-              title={t('action.undo', { ns: 'common' })}
-              aria-label={t('action.undo', { ns: 'common' })}
-            >
-              {isRollingBack ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : (
-                <X className="size-3" />
-              )}
-            </Button>
-            <Button
-              type="button"
-              size="icon-xs"
-              variant="ghost"
-              className="rounded-full text-emerald-600 hover:bg-muted hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-white/[0.03] dark:hover:text-emerald-200"
-              onClick={() => void handleAccept()}
-              disabled={isAccepting || isRollingBack}
-              title={t('action.allow', { ns: 'common' })}
-              aria-label={t('action.allow', { ns: 'common' })}
-            >
-              {isAccepting ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : (
-                <Check className="size-3" />
-              )}
-            </Button>
-          </div>
-        ) : change.status === 'accepted' ? (
-          <CheckCircle2 className="mt-1 size-4 shrink-0 text-emerald-400" />
-        ) : change.status === 'reverted' ? (
-          <RotateCcw className="mt-1 size-4 shrink-0 text-muted-foreground" />
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            className="rounded-full text-muted-foreground hover:bg-muted hover:text-foreground dark:text-zinc-500 dark:hover:bg-white/[0.03] dark:hover:text-white"
+            onClick={() => void handleUndo()}
+            disabled={isUndoing}
+            title={t('action.undo', { ns: 'common' })}
+            aria-label={t('action.undo', { ns: 'common' })}
+          >
+            {isUndoing ? <Loader2 className="size-3 animate-spin" /> : <X className="size-3" />}
+          </Button>
         ) : (
-          <XCircle className="mt-1 size-4 shrink-0 text-amber-400" />
+          <RotateCcw className="mt-1 size-4 shrink-0 text-muted-foreground" />
         )}
       </div>
 
@@ -458,11 +392,9 @@ export function ChangeReviewPanelContent({
   const { t } = useTranslation(['chat', 'common'])
   const storedChangeSet = useAgentStore((state) => state.runChangesByRunId[runId] ?? null)
   const refreshRunChanges = useAgentStore((state) => state.refreshRunChanges)
-  const acceptRunChanges = useAgentStore((state) => state.acceptRunChanges)
-  const rollbackRunChanges = useAgentStore((state) => state.rollbackRunChanges)
+  const undoRunChanges = useAgentStore((state) => state.undoRunChanges)
   const [selectedChangeId, setSelectedChangeId] = React.useState<string | null>(null)
-  const [isAcceptingAll, setIsAcceptingAll] = React.useState(false)
-  const [isRollingBackAll, setIsRollingBackAll] = React.useState(false)
+  const [isUndoingAll, setIsUndoingAll] = React.useState(false)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
   const requestedRunIdRef = React.useRef<string | null>(null)
   const changeSet = changeSetOverride ?? storedChangeSet
@@ -479,7 +411,12 @@ export function ChangeReviewPanelContent({
     requestedRunIdRef.current = runId
     setIsRefreshing(true)
 
-    void refreshRunChanges(runId).finally(() => {
+    const sessionId =
+      changeSet && typeof (changeSet as AgentRunChangeSet).sessionId === 'string'
+        ? ((changeSet as AgentRunChangeSet).sessionId ?? undefined)
+        : undefined
+
+    void refreshRunChanges(runId, sessionId ? { sessionId } : undefined).finally(() => {
       if (!cancelled) {
         setIsRefreshing(false)
       }
@@ -522,29 +459,17 @@ export function ChangeReviewPanelContent({
   )
 
   const pendingCount = React.useMemo(
-    () =>
-      aggregatedChanges.filter(
-        (change) => change.status === 'open' || change.status === 'conflicted'
-      ).length,
+    () => aggregatedChanges.filter((change) => change.status === 'open').length,
     [aggregatedChanges]
   )
   const actionable = pendingCount > 0
 
-  const handleAcceptAll = async (): Promise<void> => {
-    setIsAcceptingAll(true)
+  const handleUndoAll = async (): Promise<void> => {
+    setIsUndoingAll(true)
     try {
-      await acceptRunChanges(runId)
+      await undoRunChanges(runId)
     } finally {
-      setIsAcceptingAll(false)
-    }
-  }
-
-  const handleRollbackAll = async (): Promise<void> => {
-    setIsRollingBackAll(true)
-    try {
-      await rollbackRunChanges(runId)
-    } finally {
-      setIsRollingBackAll(false)
+      setIsUndoingAll(false)
     }
   }
 
@@ -580,7 +505,7 @@ export function ChangeReviewPanelContent({
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
               {t('fileChange.reviewPanelDescription', {
                 defaultValue:
-                  'Review the changed files from this run, expand an item to inspect details, and confirm or undo each change.'
+                  'Review the changed files from this run, expand an item to inspect details, and undo any change.'
               })}
             </p>
           </div>
@@ -591,25 +516,10 @@ export function ChangeReviewPanelContent({
               size="xs"
               variant="ghost"
               className="text-foreground hover:bg-muted dark:text-zinc-200 dark:hover:bg-white/[0.04]"
-              onClick={() => void handleAcceptAll()}
-              disabled={!actionable || isAcceptingAll || isRollingBackAll}
+              onClick={() => void handleUndoAll()}
+              disabled={!actionable || isUndoingAll}
             >
-              {isAcceptingAll ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : (
-                <Check className="size-3" />
-              )}
-              {t('action.allow', { ns: 'common' })}
-            </Button>
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              className="text-foreground hover:bg-muted dark:text-zinc-200 dark:hover:bg-white/[0.04]"
-              onClick={() => void handleRollbackAll()}
-              disabled={!actionable || isAcceptingAll || isRollingBackAll}
-            >
-              {isRollingBackAll ? (
+              {isUndoingAll ? (
                 <Loader2 className="size-3 animate-spin" />
               ) : (
                 <RotateCcw className="size-3" />

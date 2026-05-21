@@ -137,10 +137,10 @@ export function RunChangeReviewCard({
   changeSet
 }: RunChangeReviewCardProps): React.JSX.Element | null {
   const { t } = useTranslation(['chat', 'common'])
-  const rollbackRunChanges = useAgentStore((state) => state.rollbackRunChanges)
+  const undoRunChanges = useAgentStore((state) => state.undoRunChanges)
   const openDetailPanel = useUIStore((state) => state.openDetailPanel)
   const [expandedChangeId, setExpandedChangeId] = React.useState<string | null>(null)
-  const [isRollingBack, setIsRollingBack] = React.useState(false)
+  const [isUndoing, setIsUndoing] = React.useState(false)
   const aggregatedChanges = React.useMemo(
     () => aggregateDisplayableRunFileChanges(changeSet.changes),
     [changeSet.changes]
@@ -197,10 +197,7 @@ export function RunChangeReviewCard({
   )
 
   const pendingCount = React.useMemo(
-    () =>
-      aggregatedChanges.filter(
-        (change) => change.status === 'open' || change.status === 'conflicted'
-      ).length,
+    () => aggregatedChanges.filter((change) => change.status === 'open').length,
     [aggregatedChanges]
   )
   const actionable = pendingCount > 0
@@ -209,12 +206,12 @@ export function RunChangeReviewCard({
     return null
   }
 
-  const handleRollback = async (): Promise<void> => {
-    setIsRollingBack(true)
+  const handleUndo = async (): Promise<void> => {
+    setIsUndoing(true)
     try {
-      await rollbackRunChanges(runId)
+      await undoRunChanges(runId)
     } finally {
-      setIsRollingBack(false)
+      setIsUndoing(false)
     }
   }
 
@@ -244,10 +241,10 @@ export function RunChangeReviewCard({
         <button
           type="button"
           className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-          onClick={() => void handleRollback()}
-          disabled={!actionable || isRollingBack}
+          onClick={() => void handleUndo()}
+          disabled={!actionable || isUndoing}
         >
-          {isRollingBack ? (
+          {isUndoing ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (
             <RotateCcw className="size-3.5" />

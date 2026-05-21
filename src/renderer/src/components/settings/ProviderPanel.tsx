@@ -35,6 +35,12 @@ import {
   DialogTitle
 } from '@renderer/components/ui/dialog'
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger
+} from '@renderer/components/ui/context-menu'
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -1373,6 +1379,19 @@ function ProviderConfigPanel({ provider }: { provider: AIProvider }): React.JSX.
     if (hours > 0 && mins > 0) return `${hours}h ${mins}m`
     return `${hours}h`
   }
+
+  const handleDeleteProvider = async (): Promise<void> => {
+    if (provider.builtinId) return
+    const ok = await confirm({
+      title: t('provider.deleteProvider'),
+      description: t('provider.deleteProviderConfirm', { name: provider.name }),
+      confirmLabel: t('provider.deleteProvider'),
+      variant: 'destructive'
+    })
+    if (!ok) return
+    removeProvider(provider.id)
+    toast.success(t('provider.providerDeleted'))
+  }
   const formatResetAt = (value?: string): string | null => {
     if (!value) return null
     const trimmed = value.trim()
@@ -2033,14 +2052,8 @@ function ProviderConfigPanel({ provider }: { provider: AIProvider }): React.JSX.
               variant="ghost"
               size="sm"
               className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
-              onClick={async () => {
-                const ok = await confirm({
-                  title: t('provider.deleteConfirm', { name: provider.name }),
-                  variant: 'destructive'
-                })
-                if (!ok) return
-                removeProvider(provider.id)
-              }}
+              title={t('provider.deleteProvider')}
+              onClick={() => void handleDeleteProvider()}
             >
               <Trash2 className="size-3.5" />
             </Button>
@@ -3761,6 +3774,7 @@ function ThinkingConfigDialog({
 export function ProviderPanel(): React.JSX.Element {
   const { t } = useTranslation('settings')
   const providers = useProviderStore((s) => s.providers)
+  const removeProvider = useProviderStore((s) => s.removeProvider)
 
   const [selectedId, setSelectedId] = useState<string | null>(
     () => providers.find((p) => p.enabled)?.id ?? providers[0]?.id ?? null
@@ -3793,6 +3807,62 @@ export function ProviderPanel(): React.JSX.Element {
       ),
     [providers, searchQuery]
   )
+
+  const handleDeleteProvider = async (provider: AIProvider): Promise<void> => {
+    if (provider.builtinId) return
+    const ok = await confirm({
+      title: t('provider.deleteProvider'),
+      description: t('provider.deleteProviderConfirm', { name: provider.name }),
+      confirmLabel: t('provider.deleteProvider'),
+      variant: 'destructive'
+    })
+    if (!ok) return
+    removeProvider(provider.id)
+    if (selectedId === provider.id) {
+      setSelectedId(null)
+    }
+    toast.success(t('provider.providerDeleted'))
+  }
+
+  const renderProviderListItem = (provider: AIProvider, muted: boolean): React.JSX.Element => {
+    const item = (
+      <button
+        type="button"
+        onClick={() => setSelectedId(provider.id)}
+        className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 mt-0.5 text-left transition-colors ${
+          resolvedSelectedId === provider.id
+            ? 'bg-accent text-accent-foreground'
+            : muted
+              ? 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+              : 'text-foreground/80 hover:bg-muted/60'
+        }`}
+      >
+        <ProviderIcon
+          builtinId={provider.builtinId}
+          size={16}
+          className={muted ? 'opacity-50' : undefined}
+        />
+        <span className="flex-1 truncate text-xs">{provider.name}</span>
+        {!muted && <span className="size-1.5 rounded-full bg-emerald-500 shrink-0" />}
+      </button>
+    )
+
+    return (
+      <ContextMenu key={provider.id}>
+        <ContextMenuTrigger asChild>{item}</ContextMenuTrigger>
+        <ContextMenuContent className="w-44">
+          <ContextMenuItem
+            className="gap-2 text-xs text-destructive focus:text-destructive"
+            disabled={Boolean(provider.builtinId)}
+            onSelect={() => void handleDeleteProvider(provider)}
+          >
+            <Trash2 className="size-3.5" />
+            {t('provider.deleteProvider')}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    )
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -3834,21 +3904,7 @@ export function ProviderPanel(): React.JSX.Element {
                   <p className="text-[10px] font-medium text-muted-foreground/50 uppercase tracking-wider px-1">
                     {t('provider.enabled')}
                   </p>
-                  {enabledProviders.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => setSelectedId(p.id)}
-                      className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 mt-0.5 text-left transition-colors ${
-                        resolvedSelectedId === p.id
-                          ? 'bg-accent text-accent-foreground'
-                          : 'text-foreground/80 hover:bg-muted/60'
-                      }`}
-                    >
-                      <ProviderIcon builtinId={p.builtinId} size={16} />
-                      <span className="flex-1 truncate text-xs">{p.name}</span>
-                      <span className="size-1.5 rounded-full bg-emerald-500 shrink-0" />
-                    </button>
-                  ))}
+                  {enabledProviders.map((p) => renderProviderListItem(p, false))}
                 </div>
               )}
 
@@ -3857,20 +3913,7 @@ export function ProviderPanel(): React.JSX.Element {
                   <p className="text-[10px] font-medium text-muted-foreground/50 uppercase tracking-wider px-1">
                     {t('provider.disabled')}
                   </p>
-                  {disabledProviders.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => setSelectedId(p.id)}
-                      className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 mt-0.5 text-left transition-colors ${
-                        resolvedSelectedId === p.id
-                          ? 'bg-accent text-accent-foreground'
-                          : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
-                      }`}
-                    >
-                      <ProviderIcon builtinId={p.builtinId} size={16} className="opacity-50" />
-                      <span className="flex-1 truncate text-xs">{p.name}</span>
-                    </button>
-                  ))}
+                  {disabledProviders.map((p) => renderProviderListItem(p, true))}
                 </div>
               )}
             </div>

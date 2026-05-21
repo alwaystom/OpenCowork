@@ -1312,12 +1312,6 @@ export function InputArea({
   }, [activeSshConnectionId, workspaceReady, workingFolder])
 
   React.useEffect(() => {
-    if (!isStreaming && !disabled) {
-      editorRef.current?.focus()
-    }
-  }, [isStreaming, disabled])
-
-  React.useEffect(() => {
     if (!shouldAutoAcceptRecommendation || !suggestionText || !text.trim()) {
       setAutoAcceptCountdown(null)
       return
@@ -1439,6 +1433,29 @@ export function InputArea({
     persistedDraft,
     workingFolder
   ])
+
+  React.useEffect(() => {
+    if (isStreaming || disabled || !inputDraftHydrated) return
+
+    const rafId = window.requestAnimationFrame(() => {
+      if (activeDraftKey && draftReadyKeyRef.current !== activeDraftKey) return
+
+      const activeElement = document.activeElement
+      if (
+        activeElement &&
+        activeElement !== document.body &&
+        !rootRef.current?.contains(activeElement)
+      ) {
+        return
+      }
+
+      editorRef.current?.focus()
+    })
+
+    return () => {
+      window.cancelAnimationFrame(rafId)
+    }
+  }, [activeDraftKey, disabled, inputDraftHydrated, isStreaming])
 
   React.useEffect(() => {
     if (!activeDraftKey || !inputDraftHydrated) return

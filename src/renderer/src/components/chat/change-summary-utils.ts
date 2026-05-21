@@ -49,31 +49,32 @@ function isErrorResult(value: unknown): value is ErrorResult {
   return !!value && typeof value === 'object' && 'error' in value && typeof value.error === 'string'
 }
 
-async function loadSnapshotSide(
-  change: AggregatedFileChange,
-  side: 'before' | 'after'
-): Promise<string | ErrorResult | null> {
-  const sourceChange =
-    side === 'before'
-      ? change.sourceChanges[0]
-      : change.sourceChanges[change.sourceChanges.length - 1]
+async function loadSnapshotSidesViaIpc(
+  change: AggregatedFileChange
+): Promise<LoadedChangeContent | ErrorResult | null> {
+  const firstSourceChange = change.sourceChanges[0]
+  const lastSourceChange = change.sourceChanges[change.sourceChanges.length - 1]
+  const sourceChange = lastSourceChange ?? firstSourceChange
   if (!sourceChange) return null
 
-  const snapshot = side === 'before' ? sourceChange.before : sourceChange.after
-  if (side === 'before' && !snapshot.exists) return ''
-  if (canRenderInlineSnapshot(snapshot)) {
-    return snapshotText(snapshot)
-  }
-
-  const result = await ipcClient.invoke(IPC.AGENT_CHANGES_SNAPSHOT_CONTENT, {
+  const result = await ipcClient.invoke(IPC.AGENT_CHANGES_DIFF_CONTENT, {
     runId: sourceChange.runId,
-    changeId: sourceChange.id,
-    side
+    changeId: sourceChange.id
   })
 
   if (isErrorResult(result)) return result
-  if (result && typeof result === 'object' && 'text' in result && typeof result.text === 'string') {
-    return result.text
+  if (
+    result &&
+    typeof result === 'object' &&
+    'beforeText' in result &&
+    'afterText' in result &&
+    typeof result.beforeText === 'string' &&
+    typeof result.afterText === 'string'
+  ) {
+    return {
+      beforeText: result.beforeText,
+      afterText: result.afterText
+    }
   }
   return null
 }
@@ -112,18 +113,29 @@ export async function loadAggregatedChangeContent(
   }
 
   const request = (async (): Promise<LoadedChangeContent | ErrorResult | null> => {
-    const [beforeText, afterText] = await Promise.all([
-      loadSnapshotSide(change, 'before'),
-      loadSnapshotSide(change, 'after')
-    ])
+    const firstSourceChange = change.sourceChanges[0]
+    const lastSourceChange = change.sourceChanges[change.sourceChanges.length - 1]
+    if (!firstSourceChange || !lastSourceChange) return null
 
-    if (isErrorResult(beforeText)) return beforeText
-    if (isErrorResult(afterText)) return afterText
-    if (typeof beforeText !== 'string' || typeof afterText !== 'string') return null
+    const beforeInline = !firstSourceChange.before.exists
+      ? ''
+      : canRenderInlineSnapshot(firstSourceChange.before)
+        ? snapshotText(firstSourceChange.before)
+        : null
+    const afterInline = canRenderInlineSnapshot(lastSourceChange.after)
+      ? snapshotText(lastSourceChange.after)
+      : null
 
+    if (beforeInline !== null && afterInline !== null) {
+      return { beforeText: beforeInline, afterText: afterInline }
+    }
+
+    const fetched = await loadSnapshotSidesViaIpc(change)
+    if (!fetched) return null
+    if (isErrorResult(fetched)) return fetched
     return {
-      beforeText,
-      afterText
+      beforeText: beforeInline ?? fetched.beforeText,
+      afterText: afterInline ?? fetched.afterText
     }
   })()
 

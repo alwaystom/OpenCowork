@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.106] - 2026-05-24
+
+### Added
+
+- Added automatic `sort_order` normalization before message reads so sessions with dirty sequence data are repaired in place only when anomalies are detected.
+
+### Fixed
+
+- Fixed message query ordering drift caused by gaps, duplicates, or out-of-order `sort_order` values in `messages` rows within the same session.
+- Added `created_at ASC` as a secondary ordering key across message queries and stopped `upsertMessage` conflict updates from overwriting recovered `sort_order` values.
+
 ## [0.9.105] - 2026-05-24
 
 ### Changed

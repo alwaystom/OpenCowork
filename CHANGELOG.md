@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.111] - 2026-05-28
+
+### Added
+
+- Enhanced ModelSwitcher component with Popover dropdown for better model selection UX.
+- Added workspace directory change detection with automatic refresh and provider-based model grouping.
+- Implemented message write tracking and flush mechanism for chat sessions.
+- Added browser goal runtime support for agent sessions.
+
+### Fixed
+
+- Fixed sub-agent event handling for background sessions with session-scoped state lookup.
+- Improved code structure for better readability and maintainability.
+
 ## [0.9.110] - 2026-05-27
 
 ### Added

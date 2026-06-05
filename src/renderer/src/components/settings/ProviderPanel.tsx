@@ -157,6 +157,19 @@ const REASONING_EFFORT_OPTIONS: ReasoningEffortLevel[] = [
   'xhigh'
 ]
 
+const ALL_PROVIDER_FILTER = '__all__'
+const CUSTOM_PROVIDER_KEY_PREFIX = 'provider:'
+const BUILTIN_PROVIDER_KEY_PREFIX = 'builtin:'
+
+type ManagedModelProviderSource = {
+  key: string
+  name: string
+  type: ProviderType
+  builtinId?: string
+  configured: boolean
+  enabled?: boolean
+}
+
 function toOptionalSelectValue<T extends string>(
   value?: T
 ): T | typeof RESPONSES_IMAGE_GENERATION_DEFAULT_OPTION {
@@ -225,6 +238,8 @@ function toDiscoveredModelConfig(
   const resolvedName =
     options.name?.trim() ||
     (typeof rawModel.name === 'string' && rawModel.name.trim()) ||
+    (typeof rawModel.display_name === 'string' && rawModel.display_name.trim()) ||
+    (typeof rawModel.displayName === 'string' && rawModel.displayName.trim()) ||
     fallback?.name ||
     idCandidate
   const contextLength =
@@ -256,6 +271,92 @@ function toDiscoveredModelConfig(
     ...(contextLength ? { contextLength } : {}),
     ...(maxOutputTokens ? { maxOutputTokens } : {})
   }
+}
+
+function getProviderSourceKey(provider: Pick<AIProvider, 'id' | 'builtinId'>): string {
+  return provider.builtinId
+    ? `${BUILTIN_PROVIDER_KEY_PREFIX}${provider.builtinId}`
+    : `${CUSTOM_PROVIDER_KEY_PREFIX}${provider.id}`
+}
+
+function addManagedModelProviderSource(
+  index: Map<string, ManagedModelProviderSource[]>,
+  modelId: string,
+  source: ManagedModelProviderSource
+): void {
+  const modelKey = normalizeModelKey(modelId)
+  const sources = index.get(modelKey) ?? []
+  const existingIndex = sources.findIndex((item) => item.key === source.key)
+
+  if (existingIndex >= 0) {
+    const existing = sources[existingIndex]
+    sources[existingIndex] = {
+      ...existing,
+      ...source,
+      configured: existing.configured || source.configured,
+      enabled: existing.enabled || source.enabled
+    }
+    index.set(modelKey, sources)
+    return
+  }
+
+  index.set(modelKey, [...sources, source])
+}
+
+function sortManagedModelProviderSources(
+  sources: ManagedModelProviderSource[]
+): ManagedModelProviderSource[] {
+  return [...sources].sort((a, b) => {
+    const rank = (source: ManagedModelProviderSource): number => {
+      if (source.configured && source.enabled) return 0
+      if (source.configured) return 1
+      return 2
+    }
+    const rankCompare = rank(a) - rank(b)
+    if (rankCompare !== 0) return rankCompare
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+  })
+}
+
+function buildManagedModelProviderSourceIndex(
+  providers: AIProvider[]
+): Map<string, ManagedModelProviderSource[]> {
+  const index = new Map<string, ManagedModelProviderSource[]>()
+
+  for (const provider of providers) {
+    const source: ManagedModelProviderSource = {
+      key: getProviderSourceKey(provider),
+      name: provider.name,
+      type: provider.type,
+      builtinId: provider.builtinId,
+      configured: true,
+      enabled: provider.enabled
+    }
+
+    for (const model of provider.models) {
+      addManagedModelProviderSource(index, model.id, source)
+    }
+  }
+
+  for (const preset of builtinProviderPresets) {
+    const source: ManagedModelProviderSource = {
+      key: `${BUILTIN_PROVIDER_KEY_PREFIX}${preset.builtinId}`,
+      name: preset.name,
+      type: preset.type,
+      builtinId: preset.builtinId,
+      configured: false
+    }
+
+    for (const model of preset.defaultModels) {
+      addManagedModelProviderSource(index, model.id, source)
+    }
+  }
+
+  for (const [modelKey, sources] of index) {
+    index.set(modelKey, sortManagedModelProviderSources(sources))
+  }
+
+  return index
 }
 
 // --- Fetch models from provider API ---
@@ -320,14 +421,41 @@ async function fetchModelsFromProvider(
       .filter((model): model is AIModelConfig => Boolean(model))
   }
 
+  if (type === 'anthropic') {
+    const url = `${normalizeProviderBaseUrl(baseUrl || 'https://api.anthropic.com', type)}/v1/models`
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01'
+    }
+    if (apiKey) headers['x-api-key'] = apiKey
+    if (userAgent) headers['User-Agent'] = userAgent
+    const result = await window.electron.ipcRenderer.invoke('api:request', {
+      url,
+      method: 'GET',
+      headers,
+      useSystemProxy
+    })
+    if (result?.error) throw new Error(result.error)
+    if (result?.statusCode && result.statusCode >= 400) {
+      throw new Error(`HTTP ${result.statusCode}: ${result.body?.slice(0, 200)}`)
+    }
+    const data = JSON.parse(result.body)
+    const models = data?.data ?? []
+    const discoveredModels = models
+      .map((model: Record<string, unknown>) => toDiscoveredModelConfig(model, { builtinId }))
+      .filter((model): model is AIModelConfig => Boolean(model))
+
+    if (discoveredModels.length > 0) {
+      return discoveredModels
+    }
+  }
+
   if (type === 'anthropic' && builtinId) {
     const builtinPreset = builtinProviderPresets.find((preset) => preset.builtinId === builtinId)
     if (builtinPreset?.defaultModels.length) {
       return builtinPreset.defaultModels.map((model) => ({ ...model }))
     }
   }
-
-  // For Anthropic: no list API, return empty
   return []
 }
 
@@ -427,6 +555,7 @@ function ModelFormDialog({
   providerType,
   initial,
   onSave,
+  resolveManagedModel,
   allowIdEditing = false
 }: {
   open: boolean
@@ -434,6 +563,7 @@ function ModelFormDialog({
   providerType?: ProviderType | null
   initial?: AIModelConfig
   onSave: (model: AIModelConfig) => void | boolean
+  resolveManagedModel?: (modelId: string) => ManagedModelConfig | null
   allowIdEditing?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('settings')
@@ -509,62 +639,154 @@ function ModelFormDialog({
     useState(initial?.responsesImageGeneration?.outputCompression?.toString() ?? '')
   const [responsesImageGenerationPartialImages, setResponsesImageGenerationPartialImages] =
     useState(initial?.responsesImageGeneration?.partialImages?.toString() ?? '')
+  const reusableManagedModel =
+    !isEdit && id.trim() ? (resolveManagedModel?.(id.trim()) ?? null) : null
+
+  const applyReusableModelDefaults = (model: AIModelConfig): void => {
+    setName(model.name)
+    setTypeOverride(model.type ?? 'none')
+    setCategory(model.category ?? 'chat')
+    setContextLength(model.contextLength?.toString() ?? '')
+    setMaxOutputTokens(model.maxOutputTokens?.toString() ?? '')
+    setContextCompressionThreshold(
+      Math.round(
+        clampCompressionThreshold(
+          model.contextCompressionThreshold ?? DEFAULT_CONTEXT_COMPRESSION_THRESHOLD
+        ) * 100
+      ).toString()
+    )
+    setInputPrice(model.inputPrice?.toString() ?? '')
+    setOutputPrice(model.outputPrice?.toString() ?? '')
+    setCacheCreationPrice(model.cacheCreationPrice?.toString() ?? '')
+    setCacheHitPrice(model.cacheHitPrice?.toString() ?? '')
+    setPremiumRequestMultiplier(model.premiumRequestMultiplier?.toString() ?? '')
+    setAvailablePlans(model.availablePlans?.join(', ') ?? '')
+    setSupportsVision(model.supportsVision ?? false)
+    setSupportsFunctionCall(model.supportsFunctionCall ?? true)
+    setSupportsComputerUse(model.supportsComputerUse ?? false)
+    setEnableComputerUse(model.enableComputerUse ?? false)
+    setIcon(model.icon ?? '')
+    setResponseSummary(model.responseSummary ?? 'none')
+    setWebsocketMode(model.websocketMode ?? 'auto')
+    setEnableSystemPromptCache(model.enableSystemPromptCache ?? true)
+    setResponsesImageGenerationEnabled(model.responsesImageGeneration?.enabled ?? true)
+    setResponsesImageGenerationAction(toOptionalSelectValue(model.responsesImageGeneration?.action))
+    setResponsesImageGenerationBackground(
+      toOptionalSelectValue(model.responsesImageGeneration?.background)
+    )
+    setResponsesImageGenerationInputFidelity(
+      toOptionalSelectValue(model.responsesImageGeneration?.inputFidelity)
+    )
+    setResponsesImageGenerationModeration(
+      toOptionalSelectValue(model.responsesImageGeneration?.moderation)
+    )
+    setResponsesImageGenerationOutputFormat(
+      toOptionalSelectValue(model.responsesImageGeneration?.outputFormat)
+    )
+    setResponsesImageGenerationQuality(
+      toOptionalSelectValue(model.responsesImageGeneration?.quality)
+    )
+    setResponsesImageGenerationSize(toOptionalSelectValue(model.responsesImageGeneration?.size))
+    setResponsesImageGenerationOutputCompression(
+      model.responsesImageGeneration?.outputCompression?.toString() ?? ''
+    )
+    setResponsesImageGenerationPartialImages(
+      model.responsesImageGeneration?.partialImages?.toString() ?? ''
+    )
+  }
+
+  const handleModelIdChange = (value: string): void => {
+    setId(value)
+    if (isEdit) return
+    const reusableModel = value.trim() ? resolveManagedModel?.(value.trim()) : null
+    if (reusableModel) {
+      applyReusableModelDefaults(toModelConfig(reusableModel))
+    }
+  }
+
   const requestType = typeOverride === 'none' ? providerType : typeOverride
   const isResponsesModel = requestType === 'openai-responses'
   const handleSave = (): void => {
-    if (!id.trim()) return
-    const model: AIModelConfig = {
-      id: id.trim(),
-      name: name.trim() || id.trim(),
-      enabled: initial?.enabled ?? true
-    }
+    const modelId = id.trim()
+    if (!modelId) return
+    const managedDefaults = !isEdit ? resolveManagedModel?.(modelId) : null
+    const model: AIModelConfig = managedDefaults
+      ? toModelConfig(managedDefaults)
+      : {
+          id: modelId,
+          name: name.trim() || modelId,
+          enabled: initial?.enabled ?? true
+        }
+    model.id = modelId
+    model.name = name.trim() || modelId
+    model.enabled = initial?.enabled ?? true
     model.category = category
     if (typeOverride && typeOverride !== 'none') model.type = typeOverride
+    else delete model.type
     if (contextLength.trim()) {
       const v = parseInt(contextLength)
       if (!isNaN(v)) model.contextLength = v
+    } else {
+      delete model.contextLength
     }
     if (maxOutputTokens.trim()) {
       const v = parseInt(maxOutputTokens)
       if (!isNaN(v)) model.maxOutputTokens = v
+    } else {
+      delete model.maxOutputTokens
     }
     if (contextCompressionThreshold.trim()) {
       const v = parseFloat(contextCompressionThreshold)
       if (!isNaN(v)) {
         model.contextCompressionThreshold = clampCompressionThreshold(v / 100)
       }
+    } else {
+      delete model.contextCompressionThreshold
     }
     if (inputPrice.trim()) {
       const v = parseFloat(inputPrice)
       if (!isNaN(v)) model.inputPrice = v
+    } else {
+      delete model.inputPrice
     }
     if (outputPrice.trim()) {
       const v = parseFloat(outputPrice)
       if (!isNaN(v)) model.outputPrice = v
+    } else {
+      delete model.outputPrice
     }
     if (cacheCreationPrice.trim()) {
       const v = parseFloat(cacheCreationPrice)
       if (!isNaN(v)) model.cacheCreationPrice = v
+    } else {
+      delete model.cacheCreationPrice
     }
     if (cacheHitPrice.trim()) {
       const v = parseFloat(cacheHitPrice)
       if (!isNaN(v)) model.cacheHitPrice = v
+    } else {
+      delete model.cacheHitPrice
     }
     if (premiumRequestMultiplier.trim()) {
       const v = parseFloat(premiumRequestMultiplier)
       if (!isNaN(v)) model.premiumRequestMultiplier = v
+    } else {
+      delete model.premiumRequestMultiplier
     }
     const parsedPlans = availablePlans
       .split(',')
       .map((item) => item.trim())
       .filter(Boolean)
     if (parsedPlans.length > 0) model.availablePlans = parsedPlans
+    else delete model.availablePlans
     model.supportsVision = supportsVision
-    if (!supportsFunctionCall) model.supportsFunctionCall = false
+    model.supportsFunctionCall = supportsFunctionCall
     model.supportsComputerUse = supportsComputerUse
     model.enableComputerUse = supportsComputerUse && enableComputerUse
     if (icon.trim()) model.icon = icon.trim()
+    else delete model.icon
     if (responseSummary && responseSummary !== 'none') model.responseSummary = responseSummary
+    else delete model.responseSummary
     model.enableSystemPromptCache = enableSystemPromptCache
     if (isResponsesModel) {
       model.websocketMode = websocketMode
@@ -604,8 +826,9 @@ function ModelFormDialog({
         ...(outputCompression !== undefined ? { outputCompression } : {}),
         ...(partialImages !== undefined ? { partialImages } : {})
       }
-    } else if (initial?.websocketMode !== undefined) {
-      model.websocketMode = undefined
+    } else {
+      delete model.responsesImageGeneration
+      delete model.websocketMode
     }
     // preserve thinking config if editing
     if (initial?.supportsThinking) model.supportsThinking = initial.supportsThinking
@@ -637,7 +860,7 @@ function ModelFormDialog({
               <Input
                 placeholder={t('provider.modelIdPlaceholder')}
                 value={id}
-                onChange={(e) => setId(e.target.value)}
+                onChange={(e) => handleModelIdChange(e.target.value)}
                 disabled={isEdit && !allowIdEditing}
                 autoFocus={!isEdit}
                 className="text-xs"
@@ -654,6 +877,13 @@ function ModelFormDialog({
               />
             </div>
           </div>
+          {reusableManagedModel && (
+            <p className="text-[11px] text-emerald-600 dark:text-emerald-400">
+              {t('provider.modelManagementDefaultsApplied', {
+                name: reusableManagedModel.name
+              })}
+            </p>
+          )}
 
           {/* Protocol type override */}
           <div className="space-y-1.5">
@@ -2003,7 +2233,8 @@ function ProviderConfigPanel({ provider }: { provider: AIProvider }): React.JSX.
         activeProvider.apiKey,
         activeProvider.builtinId,
         activeProvider.useSystemProxy,
-        activeProvider.userAgent
+        activeProvider.userAgent,
+        activeProvider.oauth
       )
       if (models.length === 0) {
         toast.info(t('provider.noModelsFound'))
@@ -3154,6 +3385,7 @@ function ProviderConfigPanel({ provider }: { provider: AIProvider }): React.JSX.
         open={addModelOpen}
         onOpenChange={setAddModelOpen}
         providerType={provider.type}
+        resolveManagedModel={getManagedModelById}
         onSave={(model) => addModel(provider.id, model)}
       />
 
@@ -3197,23 +3429,60 @@ function ProviderConfigPanel({ provider }: { provider: AIProvider }): React.JSX.
 export function ModelManagementPanel(): React.JSX.Element {
   const { t } = useTranslation('settings')
   const managedModels = useProviderStore((s) => s.managedModels)
+  const providers = useProviderStore((s) => s.providers)
   const addManagedModel = useProviderStore((s) => s.addManagedModel)
   const updateManagedModel = useProviderStore((s) => s.updateManagedModel)
   const removeManagedModel = useProviderStore((s) => s.removeManagedModel)
 
   const [modelSearch, setModelSearch] = useState('')
+  const [providerFilter, setProviderFilter] = useState(ALL_PROVIDER_FILTER)
   const [addModelOpen, setAddModelOpen] = useState(false)
   const [editingModel, setEditingModel] = useState<ManagedModelConfig | null>(null)
   const [editingThinkingModel, setEditingThinkingModel] = useState<ManagedModelConfig | null>(null)
 
+  const providerSourceIndex = useMemo(
+    () => buildManagedModelProviderSourceIndex(providers),
+    [providers]
+  )
+  const providerFilterOptions = useMemo(() => {
+    const optionsByKey = new Map<string, ManagedModelProviderSource>()
+    for (const model of managedModels) {
+      const sources = providerSourceIndex.get(model.normalizedKey) ?? []
+      for (const source of sources) {
+        optionsByKey.set(source.key, source)
+      }
+    }
+    return sortManagedModelProviderSources(Array.from(optionsByKey.values()))
+  }, [managedModels, providerSourceIndex])
+
+  const resolvedProviderFilter =
+    providerFilter === ALL_PROVIDER_FILTER ||
+    providerFilterOptions.some((option) => option.key === providerFilter)
+      ? providerFilter
+      : ALL_PROVIDER_FILTER
+
   const enabledModelCount = managedModels.filter((model) => model.enabled).length
   const filteredModels = useMemo(() => {
-    if (!modelSearch) return managedModels
     const query = modelSearch.toLowerCase()
-    return managedModels.filter(
-      (model) => model.name.toLowerCase().includes(query) || model.id.toLowerCase().includes(query)
-    )
-  }, [managedModels, modelSearch])
+    return managedModels.filter((model) => {
+      const sources = providerSourceIndex.get(model.normalizedKey) ?? []
+      const matchesProvider =
+        resolvedProviderFilter === ALL_PROVIDER_FILTER ||
+        sources.some((source) => source.key === resolvedProviderFilter)
+      if (!matchesProvider) return false
+      if (!query) return true
+      return (
+        model.name.toLowerCase().includes(query) ||
+        model.id.toLowerCase().includes(query) ||
+        sources.some(
+          (source) =>
+            source.name.toLowerCase().includes(query) ||
+            source.type.toLowerCase().includes(query) ||
+            source.builtinId?.toLowerCase().includes(query)
+        )
+      )
+    })
+  }, [managedModels, modelSearch, resolvedProviderFilter, providerSourceIndex])
 
   const handleSaveManagedModel = (model: AIModelConfig, currentKey?: string): boolean => {
     const nextKey = normalizeModelKey(model.id)
@@ -3270,14 +3539,37 @@ export function ModelManagementPanel(): React.JSX.Element {
                 {t('provider.modelManagementHint')}
               </p>
             </div>
-            <div className="relative basis-full sm:basis-auto">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-              <Input
-                placeholder={t('provider.searchManagedModels')}
-                value={modelSearch}
-                onChange={(e) => setModelSearch(e.target.value)}
-                className="h-7 w-full sm:w-40 pl-7 text-[11px]"
-              />
+            <div className="flex basis-full flex-col gap-2 sm:basis-auto sm:flex-row">
+              <Select value={resolvedProviderFilter} onValueChange={setProviderFilter}>
+                <SelectTrigger className="h-7 w-full sm:w-44 text-[11px]">
+                  <SelectValue placeholder={t('provider.allModelProviders')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_PROVIDER_FILTER} className="text-[11px]">
+                    <span className="flex items-center gap-2">
+                      <Layers className="size-3.5" />
+                      {t('provider.allModelProviders')}
+                    </span>
+                  </SelectItem>
+                  {providerFilterOptions.map((source) => (
+                    <SelectItem key={source.key} value={source.key} className="text-[11px]">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <ProviderIcon builtinId={source.builtinId} size={14} />
+                        <span className="truncate">{source.name}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                <Input
+                  placeholder={t('provider.searchManagedModels')}
+                  value={modelSearch}
+                  onChange={(e) => setModelSearch(e.target.value)}
+                  className="h-7 w-full sm:w-44 pl-7 text-[11px]"
+                />
+              </div>
             </div>
           </div>
 
@@ -3345,18 +3637,30 @@ export function ModelManagementPanel(): React.JSX.Element {
                       label: t('provider.supportsThinking')
                     })
                   }
+                  const providerSources = providerSourceIndex.get(model.normalizedKey) ?? []
+                  const primaryProviderSource = providerSources[0]
+                  const visibleProviderSources = providerSources.slice(0, 4)
+                  const hiddenProviderCount = Math.max(0, providerSources.length - 4)
 
                   return (
                     <div
                       key={model.normalizedKey}
                       className="flex items-center gap-3 px-3 py-2 hover:bg-muted/30 transition-colors group"
                     >
-                      <ModelIcon
-                        icon={model.icon}
-                        modelId={model.id}
-                        size={16}
-                        className="shrink-0 opacity-40"
-                      />
+                      <div className="relative flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted/50 ring-1 ring-border/50">
+                        <ModelIcon
+                          icon={model.icon}
+                          modelId={model.id}
+                          providerBuiltinId={primaryProviderSource?.builtinId}
+                          size={16}
+                          className="shrink-0 opacity-70"
+                        />
+                        {primaryProviderSource && (
+                          <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border border-background bg-background shadow-sm">
+                            <ProviderIcon builtinId={primaryProviderSource.builtinId} size={11} />
+                          </span>
+                        )}
+                      </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <p className="text-xs font-medium truncate">{model.name}</p>
@@ -3365,6 +3669,54 @@ export function ModelManagementPanel(): React.JSX.Element {
                           </span>
                         </div>
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground/40">
+                          {providerSources.length > 0 ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted/60 px-1.5 py-0.5 text-muted-foreground/70">
+                                  <span className="flex -space-x-1">
+                                    {visibleProviderSources.map((source) => (
+                                      <span
+                                        key={source.key}
+                                        className={`flex size-4 items-center justify-center rounded-full border border-background bg-background ${
+                                          source.configured && source.enabled === false
+                                            ? 'opacity-45'
+                                            : ''
+                                        }`}
+                                      >
+                                        <ProviderIcon builtinId={source.builtinId} size={11} />
+                                      </span>
+                                    ))}
+                                  </span>
+                                  <span className="truncate">{primaryProviderSource?.name}</span>
+                                  {hiddenProviderCount > 0 && (
+                                    <span className="shrink-0">+{hiddenProviderCount}</span>
+                                  )}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="text-[11px]">
+                                <div className="flex max-w-64 flex-col gap-1">
+                                  {providerSources.map((source) => (
+                                    <div key={source.key} className="flex items-center gap-1.5">
+                                      <ProviderIcon builtinId={source.builtinId} size={12} />
+                                      <span className="min-w-0 flex-1 truncate">{source.name}</span>
+                                      <span className="text-muted-foreground/70">
+                                        {source.configured
+                                          ? source.enabled
+                                            ? t('provider.enabled')
+                                            : t('provider.disabled')
+                                          : t('provider.modelManagementPresetProvider')}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-muted-foreground/70">
+                              <ProviderIcon size={11} />
+                              {t('provider.modelManagementCustomProvider')}
+                            </span>
+                          )}
                           {model.contextLength && (
                             <span>{Math.round(model.contextLength / 1024)}K context</span>
                           )}

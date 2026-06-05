@@ -277,6 +277,9 @@ interface UIStore {
   rightPanelOpen: boolean
   toggleRightPanel: () => void
   setRightPanelOpen: (open: boolean) => void
+  runtimeStatusPanelOpen: boolean
+  toggleRuntimeStatusPanel: () => void
+  setRuntimeStatusPanelOpen: (open: boolean) => void
   workingFolderSheetOpen: boolean
   toggleWorkingFolderSheet: () => void
   setWorkingFolderSheetOpen: (open: boolean) => void
@@ -860,6 +863,10 @@ export const useUIStore = create<UIStore>()(
             rightPanelActiveTabId: RIGHT_PANEL_REVIEW_TAB_ID
           }
         }),
+      runtimeStatusPanelOpen: true,
+      toggleRuntimeStatusPanel: () =>
+        set((state) => ({ runtimeStatusPanelOpen: !state.runtimeStatusPanelOpen })),
+      setRuntimeStatusPanelOpen: (open) => set({ runtimeStatusPanelOpen: open }),
       workingFolderSheetOpen: false,
       toggleWorkingFolderSheet: () =>
         set((state) => ({ workingFolderSheetOpen: !state.workingFolderSheetOpen })),
@@ -1787,6 +1794,7 @@ export const useUIStore = create<UIStore>()(
         leftSidebarOpen: state.leftSidebarOpen,
         leftSidebarWidth: clampLeftSidebarWidth(state.leftSidebarWidth),
         rightPanelOpen: state.rightPanelOpen,
+        runtimeStatusPanelOpen: state.runtimeStatusPanelOpen,
         rightPanelWidth: clampRightPanelWidth(state.rightPanelWidth),
         workingFolderSheetOpen: state.workingFolderSheetOpen,
         workingFolderPanelWidth: clampWorkingFolderPanelWidth(state.workingFolderPanelWidth),
@@ -1807,6 +1815,10 @@ export const useUIStore = create<UIStore>()(
             state.leftSidebarWidth ?? current.leftSidebarWidth
           ),
           rightPanelWidth: clampRightPanelWidth(state.rightPanelWidth ?? current.rightPanelWidth),
+          runtimeStatusPanelOpen:
+            typeof state.runtimeStatusPanelOpen === 'boolean'
+              ? state.runtimeStatusPanelOpen
+              : current.runtimeStatusPanelOpen,
           rightPanelTabs: getDefaultRightPanelTabs(),
           rightPanelActiveTabId: RIGHT_PANEL_REVIEW_TAB_ID,
           rightPanelTab: 'preview',

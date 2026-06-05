@@ -217,8 +217,13 @@ export function SessionListPanel(): React.JSX.Element {
   const updateSettings = useSettingsStore((s) => s.updateSettings)
   const providers = useProviderStore((s) => s.providers)
   const runningSessions = useAgentStore((s) => s.runningSessions)
-  const blockedCountsBySession = useBackgroundSessionStore((s) => s.blockedCountsBySession)
-  const unreadCountsBySession = useBackgroundSessionStore((s) => s.unreadCountsBySession)
+  const waitingReplySessionIdsSig = useBackgroundSessionStore((s) => {
+    const ids = new Set<string>()
+    for (const item of s.inboxItems) {
+      if (item.type === 'ask_user') ids.add(item.sessionId)
+    }
+    return [...ids].sort().join('\u0000')
+  })
   const runningSubAgentSessionIdsSig = useAgentStore((s) => s.runningSubAgentSessionIdsSig)
   const runningBackgroundSessionIdsSig = useAgentStore((s) =>
     Object.values(s.backgroundProcesses)
@@ -292,6 +297,10 @@ export function SessionListPanel(): React.JSX.Element {
     () =>
       new Set(runningBackgroundSessionIdsSig ? runningBackgroundSessionIdsSig.split('\u0000') : []),
     [runningBackgroundSessionIdsSig]
+  )
+  const waitingReplySessionIds = useMemo(
+    () => new Set(waitingReplySessionIdsSig ? waitingReplySessionIdsSig.split('\u0000') : []),
+    [waitingReplySessionIdsSig]
   )
   const streamingSessionIds = useMemo(
     () => new Set(streamingSessionIdsSig ? streamingSessionIdsSig.split('\u0000') : []),
@@ -1106,18 +1115,9 @@ export function SessionListPanel(): React.JSX.Element {
               {runningSessions[session.id] === 'completed' && (
                 <CheckCircle2 className="size-3.5 text-emerald-500" />
               )}
-              {(blockedCountsBySession[session.id] ?? 0) > 0 && (
-                <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-600 dark:text-amber-400">
-                  {(blockedCountsBySession[session.id] ?? 0) > 99
-                    ? '99+'
-                    : blockedCountsBySession[session.id]}
-                </span>
-              )}
-              {(unreadCountsBySession[session.id] ?? 0) > 0 && (
-                <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-600 dark:text-sky-400">
-                  {(unreadCountsBySession[session.id] ?? 0) > 99
-                    ? '99+'
-                    : unreadCountsBySession[session.id]}
+              {waitingReplySessionIds.has(session.id) && (
+                <span className="whitespace-nowrap rounded-full border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-600 dark:text-amber-400">
+                  {t('sidebar.waitingReply', { defaultValue: 'Waiting reply' })}
                 </span>
               )}
               {getPendingSessionMessageCountForSession(session.id) > 0 && (

@@ -105,14 +105,22 @@ function summarizeTextMetric(
   }
 }
 
+function buildLiveTailPreview(text: string, maxChars: number = LIVE_PREVIEW_CHARS): string {
+  if (text.length <= maxChars) return text
+  const slice = text.slice(-maxChars)
+  const firstLineBreak = slice.indexOf('\n')
+  const body = firstLineBreak > 0 ? slice.slice(firstLineBreak + 1) : slice
+  return body ? `…\n${body}` : '…'
+}
+
 function summarizeWriteInput(
   input: Record<string, unknown>,
   options?: LiveToolInputSummaryOptions
 ): Record<string, unknown> {
   const content = typeof input.content === 'string' ? input.content : ''
-  const result = {
+  const result: Record<string, unknown> = {
     ...copyPathFields(input),
-    content_hidden_until_complete: true
+    content_preview: buildLiveTailPreview(content)
   }
   summarizeTextMetric(result, 'content', content, options)
   return result
@@ -125,14 +133,15 @@ function summarizeEditInput(
   const result: Record<string, unknown> = {
     ...copyPathFields(input),
     ...(input.explanation !== undefined ? { explanation: input.explanation } : {}),
-    ...(input.replace_all !== undefined ? { replace_all: input.replace_all } : {}),
-    content_hidden_until_complete: true
+    ...(input.replace_all !== undefined ? { replace_all: input.replace_all } : {})
   }
 
   if (typeof input.old_string === 'string') {
+    result.old_string_preview = buildLiveTailPreview(input.old_string)
     summarizeTextMetric(result, 'old_string', input.old_string, options)
   }
   if (typeof input.new_string === 'string') {
+    result.new_string_preview = buildLiveTailPreview(input.new_string)
     summarizeTextMetric(result, 'new_string', input.new_string, options)
   }
 

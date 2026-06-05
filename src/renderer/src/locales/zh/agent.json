@@ -10,6 +10,8 @@
     "summaryTitle": "压缩上下文摘要",
     "summaryMessages": "早期 {{count}} 条消息",
     "summaryRecentPreserved": "近期消息已保留",
+    "summaryExpand": "展开摘要",
+    "summaryCollapse": "收起摘要",
     "compressing": "正在压缩上下文…",
     "compressed": "上下文压缩完成",
     "compressedDetail": "已压缩 {{count}} 条消息",

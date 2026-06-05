@@ -27,9 +27,9 @@ export function CompressionStatusMessage({
 
   if (status.state === 'compressing') {
     return (
-      <div className="my-2 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-[12px]">
+      <div className="my-2 flex items-center gap-2 rounded-md border border-border bg-muted/25 px-3 py-2 text-[12px]">
         <Loader2 className="size-3.5 shrink-0 animate-spin text-amber-600 dark:text-amber-400" />
-        <span className="font-medium text-amber-800 dark:text-amber-200">
+        <span className="font-medium text-foreground">
           {t('contextCompression.compressing', { defaultValue: 'Compressing context…' })}
         </span>
       </div>
@@ -37,13 +37,13 @@ export function CompressionStatusMessage({
   }
 
   return (
-    <div className="my-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-emerald-500/25 bg-emerald-500/6 px-3 py-2 text-[12px]">
+    <div className="my-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-muted/25 px-3 py-2 text-[12px]">
       <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-      <span className="font-medium text-emerald-800 dark:text-emerald-200">
+      <span className="font-medium text-foreground">
         {t('contextCompression.compressed', { defaultValue: 'Context compressed' })}
       </span>
       {typeof status.keptMessageCount === 'number' && status.keptMessageCount > 0 ? (
-        <span className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80">
+        <span className="text-[11px] text-muted-foreground">
           {t('contextCompression.compressedDetail', {
             defaultValue: '{{count}} messages compressed',
             count: status.keptMessageCount
@@ -51,7 +51,7 @@ export function CompressionStatusMessage({
         </span>
       ) : null}
       {typeof status.preTokens === 'number' && status.preTokens > 0 ? (
-        <span className="text-[11px] text-emerald-700/70 dark:text-emerald-300/70">
+        <span className="text-[11px] text-muted-foreground">
           {t('contextCompression.boundaryPreTokens', {
             defaultValue: '{{tokens}} tokens at trigger',
             tokens: tokenFormatter.format(status.preTokens)

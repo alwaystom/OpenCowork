@@ -1,18 +1,45 @@
 import * as React from 'react'
 import { AnimatePresence, motion } from 'motion/react'
+import { useTranslation } from 'react-i18next'
 import { useShallow } from 'zustand/react/shallow'
+import { Folder, GitBranch, GitCompare, Laptop, ListChecks, Loader2, Server } from 'lucide-react'
 import { TodoStatusList } from '@renderer/components/chat/TodoCard'
-import type { TeamTask } from '@renderer/lib/agent/teams/types'
+import { ipcClient } from '@renderer/lib/ipc/ipc-client'
+import { IPC } from '@renderer/lib/ipc/channels'
+import { cn } from '@renderer/lib/utils'
 import { useChatStore } from '@renderer/stores/chat-store'
+import type { GitStatusDetailed, GitStatusFile } from '@renderer/stores/git-store'
+import { getSessionInputDraftKey, useInputDraftStore } from '@renderer/stores/input-draft-store'
+import { useSshStore } from '@renderer/stores/ssh-store'
 import { useTaskStore, type TaskItem } from '@renderer/stores/task-store'
 import { useTeamStore } from '@renderer/stores/team-store'
 import { useUIStore } from '@renderer/stores/ui-store'
+import type { TeamTask } from '@renderer/lib/agent/teams/types'
 
 const EMPTY_TASKS: TaskItem[] = []
-const PINNED_PANEL_MIN_WIDTH = 1040
+const MAX_DIFFS_FOR_LINE_SUMMARY = 24
 
 interface RuntimeStatusPanelProps {
   sessionId?: string | null
+}
+
+interface GitResultBase {
+  success?: boolean
+  error?: string
+}
+
+interface RuntimeGitSummary {
+  loading: boolean
+  branch: string | null
+  upstream?: string
+  ahead: number
+  behind: number
+  changedFileCount: number
+  added: number | null
+  deleted: number | null
+  dirty: boolean
+  truncatedLineSummary: boolean
+  error: string | null
 }
 
 function teamTaskToItem(task: TeamTask): TaskItem {
@@ -32,16 +59,237 @@ function teamTaskToItem(task: TeamTask): TaskItem {
   }
 }
 
+function compactPath(path: string | null): string {
+  if (!path) return ''
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  if (parts.length <= 2) return path
+  return parts.slice(-2).join('/')
+}
+
+function uniqueChangedFileCount(status: GitStatusDetailed): number {
+  const files = new Set<string>()
+  for (const item of [
+    ...status.staged,
+    ...status.unstaged,
+    ...status.untracked,
+    ...status.conflicted
+  ]) {
+    files.add(item.path)
+  }
+  return files.size
+}
+
+function summarizePatchLines(patch: string): { added: number; deleted: number } {
+  let added = 0
+  let deleted = 0
+
+  for (const line of patch.split(/\r?\n/)) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue
+    if (line.startsWith('+')) added += 1
+    if (line.startsWith('-')) deleted += 1
+  }
+
+  return { added, deleted }
+}
+
+function collectDiffTargets(
+  status: GitStatusDetailed
+): Array<{ file: GitStatusFile; staged: boolean }> {
+  const seen = new Set<string>()
+  const targets: Array<{ file: GitStatusFile; staged: boolean }> = []
+
+  const addTarget = (file: GitStatusFile, staged: boolean): void => {
+    const key = `${staged ? 'staged' : 'worktree'}:${file.path}`
+    if (seen.has(key)) return
+    seen.add(key)
+    targets.push({ file, staged })
+  }
+
+  for (const file of status.staged) addTarget(file, true)
+  for (const file of status.unstaged) addTarget(file, false)
+  for (const file of status.conflicted) addTarget(file, false)
+
+  return targets
+}
+
+function useRuntimeGitSummary(
+  workingFolder: string | null,
+  sshConnectionId: string | null
+): RuntimeGitSummary {
+  const [summary, setSummary] = React.useState<RuntimeGitSummary>({
+    loading: false,
+    branch: null,
+    ahead: 0,
+    behind: 0,
+    changedFileCount: 0,
+    added: null,
+    deleted: null,
+    dirty: false,
+    truncatedLineSummary: false,
+    error: null
+  })
+
+  React.useEffect(() => {
+    if (!workingFolder) {
+      setSummary({
+        loading: false,
+        branch: null,
+        ahead: 0,
+        behind: 0,
+        changedFileCount: 0,
+        added: null,
+        deleted: null,
+        dirty: false,
+        truncatedLineSummary: false,
+        error: null
+      })
+      return
+    }
+
+    let disposed = false
+
+    setSummary((current) => ({
+      ...current,
+      loading: true,
+      error: null
+    }))
+
+    async function loadGitSummary(): Promise<void> {
+      const statusResult = (await ipcClient.invoke(IPC.GIT_GET_STATUS_DETAILED, {
+        cwd: workingFolder,
+        sshConnectionId
+      })) as GitResultBase & { status?: GitStatusDetailed }
+
+      if (disposed) return
+
+      if (!statusResult.success || !statusResult.status) {
+        setSummary({
+          loading: false,
+          branch: null,
+          ahead: 0,
+          behind: 0,
+          changedFileCount: 0,
+          added: null,
+          deleted: null,
+          dirty: false,
+          truncatedLineSummary: false,
+          error: statusResult.error ?? 'Git status unavailable'
+        })
+        return
+      }
+
+      const status = statusResult.status
+      const diffTargets = collectDiffTargets(status)
+      const visibleDiffTargets = diffTargets.slice(0, MAX_DIFFS_FOR_LINE_SUMMARY)
+      let added = 0
+      let deleted = 0
+
+      for (const target of visibleDiffTargets) {
+        const diffResult = (await ipcClient.invoke(IPC.GIT_GET_FILE_DIFF, {
+          cwd: workingFolder,
+          sshConnectionId,
+          filePath: target.file.path,
+          staged: target.staged
+        })) as GitResultBase & { diff?: string }
+
+        if (disposed) return
+        if (!diffResult.success || !diffResult.diff) continue
+
+        const next = summarizePatchLines(diffResult.diff)
+        added += next.added
+        deleted += next.deleted
+      }
+
+      setSummary({
+        loading: false,
+        branch: status.branch,
+        upstream: status.upstream,
+        ahead: status.ahead,
+        behind: status.behind,
+        changedFileCount: uniqueChangedFileCount(status),
+        added: diffTargets.length > 0 ? added : null,
+        deleted: diffTargets.length > 0 ? deleted : null,
+        dirty:
+          status.staged.length > 0 ||
+          status.unstaged.length > 0 ||
+          status.untracked.length > 0 ||
+          status.conflicted.length > 0,
+        truncatedLineSummary: diffTargets.length > visibleDiffTargets.length,
+        error: null
+      })
+    }
+
+    void loadGitSummary()
+
+    return () => {
+      disposed = true
+    }
+  }, [sshConnectionId, workingFolder])
+
+  return summary
+}
+
+function ContextRow({
+  icon,
+  label,
+  value,
+  title,
+  valueClassName
+}: {
+  icon: React.ReactNode
+  label: string
+  value: React.ReactNode
+  title?: string
+  valueClassName?: string
+}): React.JSX.Element {
+  return (
+    <div className="flex min-w-0 items-center gap-2 text-xs" title={title}>
+      <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground/75">
+        {icon}
+      </span>
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className={cn('min-w-0 flex-1 truncate text-right text-foreground/85', valueClassName)}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
 export function RuntimeStatusPanel({
   sessionId = null
 }: RuntimeStatusPanelProps): React.JSX.Element {
-  const panelRootRef = React.useRef<HTMLDivElement | null>(null)
-  const hideTimerRef = React.useRef<number | null>(null)
-  const [containerWidth, setContainerWidth] = React.useState(0)
-  const [hoveringNarrowTrigger, setHoveringNarrowTrigger] = React.useState(false)
+  const { t } = useTranslation('layout')
   const resolvedSessionId = useChatStore((state) => sessionId ?? state.activeSessionId)
+  const context = useChatStore(
+    useShallow((state) => {
+      const activeSession = resolvedSessionId
+        ? state.sessions.find((item) => item.id === resolvedSessionId)
+        : null
+      const project = activeSession?.projectId
+        ? (state.projects.find((item) => item.id === activeSession.projectId) ?? null)
+        : state.activeProjectId
+          ? (state.projects.find((item) => item.id === state.activeProjectId) ?? null)
+          : null
+      const workingFolder = activeSession?.workingFolder ?? project?.workingFolder ?? null
+      const sshConnectionId = activeSession?.sshConnectionId ?? project?.sshConnectionId ?? null
+
+      return {
+        sessionTitle: activeSession?.title ?? null,
+        projectName: project?.name ?? null,
+        workingFolder,
+        sshConnectionId
+      }
+    })
+  )
   const rightPanelOpen = useUIStore((state) => state.rightPanelOpen)
-  const triggerHovered = useUIStore((state) => state.runtimeStatusPanelTriggerHovered)
+  const runtimeStatusPanelOpen = useUIStore((state) => state.runtimeStatusPanelOpen)
+  const sourceFiles = useInputDraftStore(
+    useShallow((state) => {
+      if (!resolvedSessionId) return []
+      const draft = state.draftsByKey[getSessionInputDraftKey(resolvedSessionId)]
+      return draft?.selectedFiles ?? []
+    })
+  )
   const sessionTasks = useTaskStore(
     useShallow((state) => {
       if (!resolvedSessionId) return EMPTY_TASKS
@@ -50,64 +298,81 @@ export function RuntimeStatusPanel({
     })
   )
   const activeTeam = useTeamStore((state) => state.activeTeam)
+  const sshConnectionName = useSshStore((state) =>
+    context.sshConnectionId
+      ? (state.connections.find((item) => item.id === context.sshConnectionId)?.name ?? null)
+      : null
+  )
+  const gitSummary = useRuntimeGitSummary(context.workingFolder, context.sshConnectionId)
 
   const teamTasks = React.useMemo(
     () => (activeTeam?.tasks ?? []).map(teamTaskToItem),
     [activeTeam?.tasks]
   )
   const tasks = sessionTasks.length > 0 ? sessionTasks : teamTasks
-  const hasContent = Boolean(resolvedSessionId && !rightPanelOpen && tasks.length > 0)
-  const hasEnoughWidth = containerWidth >= PINNED_PANEL_MIN_WIDTH
-  const visible = hasContent && (hasEnoughWidth || hoveringNarrowTrigger)
-
-  const clearHideTimer = React.useCallback((): void => {
-    if (hideTimerRef.current == null) return
-    window.clearTimeout(hideTimerRef.current)
-    hideTimerRef.current = null
-  }, [])
-
-  const scheduleNarrowHide = React.useCallback((): void => {
-    if (hasEnoughWidth) return
-    clearHideTimer()
-    hideTimerRef.current = window.setTimeout(() => {
-      setHoveringNarrowTrigger(false)
-      hideTimerRef.current = null
-    }, 200)
-  }, [clearHideTimer, hasEnoughWidth])
-
-  React.useEffect(() => {
-    const node = panelRootRef.current
-    if (!node) return
-
-    const updateWidth = (): void => setContainerWidth(node.getBoundingClientRect().width)
-    updateWidth()
-
-    const observer = new ResizeObserver(updateWidth)
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [])
-
-  React.useEffect(() => {
-    if (!hasContent || hasEnoughWidth) {
-      clearHideTimer()
-      setHoveringNarrowTrigger(false)
-    }
-  }, [clearHideTimer, hasContent, hasEnoughWidth])
-
-  React.useEffect(() => {
-    if (!hasContent || hasEnoughWidth) return
-    if (triggerHovered) {
-      clearHideTimer()
-      setHoveringNarrowTrigger(true)
-      return
-    }
-    scheduleNarrowHide()
-  }, [clearHideTimer, hasContent, hasEnoughWidth, scheduleNarrowHide, triggerHovered])
-
-  React.useEffect(() => clearHideTimer, [clearHideTimer])
+  const visible = Boolean(resolvedSessionId && runtimeStatusPanelOpen && !rightPanelOpen)
+  const targetLabel = context.sshConnectionId
+    ? sshConnectionName
+      ? t('runtimeStatus.sshNamed', { name: sshConnectionName })
+      : t('runtimeStatus.ssh')
+    : t('runtimeStatus.local')
+  const branchLabel = gitSummary.branch
+    ? [
+        gitSummary.branch,
+        gitSummary.ahead > 0 ? `↑${gitSummary.ahead}` : null,
+        gitSummary.behind > 0 ? `↓${gitSummary.behind}` : null
+      ]
+        .filter(Boolean)
+        .join(' ')
+    : gitSummary.loading
+      ? t('runtimeStatus.gitLoading')
+      : gitSummary.error
+        ? t('runtimeStatus.gitUnavailable')
+        : t('runtimeStatus.unknownBranch')
+  const changeLabel = gitSummary.loading ? (
+    t('runtimeStatus.gitLoading')
+  ) : gitSummary.error ? (
+    t('runtimeStatus.gitUnavailable')
+  ) : gitSummary.dirty ? (
+    gitSummary.added !== null && gitSummary.deleted !== null ? (
+      <span className="space-x-1 tabular-nums">
+        <span className="text-emerald-500">+{gitSummary.added}</span>
+        <span className="text-red-500">-{gitSummary.deleted}</span>
+        {gitSummary.truncatedLineSummary ? (
+          <span className="text-muted-foreground/55">...</span>
+        ) : null}
+      </span>
+    ) : (
+      t('runtimeStatus.changedFiles', { count: gitSummary.changedFileCount })
+    )
+  ) : (
+    t('runtimeStatus.clean')
+  )
+  const syncLabel = gitSummary.loading
+    ? t('runtimeStatus.gitLoading')
+    : gitSummary.error
+      ? t('runtimeStatus.gitUnavailable')
+      : gitSummary.dirty
+        ? t('runtimeStatus.commitPending')
+        : gitSummary.ahead > 0
+          ? t('runtimeStatus.pushPending')
+          : gitSummary.behind > 0
+            ? t('runtimeStatus.pullPending')
+            : t('runtimeStatus.synced')
+  const sourceLabel =
+    sourceFiles.length === 0
+      ? t('runtimeStatus.noSources')
+      : sourceFiles.length <= 2
+        ? sourceFiles.map((file) => file.name).join(', ')
+        : t('runtimeStatus.sourcesSummary', {
+            first: sourceFiles[0]?.name ?? '',
+            second: sourceFiles[1]?.name ?? '',
+            count: sourceFiles.length - 2
+          })
+  const sourceTitle = sourceFiles.map((file) => file.sendPath).join('\n')
 
   return (
-    <div ref={panelRootRef} className="pointer-events-none absolute inset-0 z-30">
+    <div className="pointer-events-none absolute inset-0 z-30">
       <AnimatePresence initial={false}>
         {visible ? (
           <motion.aside
@@ -116,17 +381,84 @@ export function RuntimeStatusPanel({
             animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
             exit={{ opacity: 0, y: -8, scale: 0.98, filter: 'blur(4px)' }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            className="pointer-events-auto absolute right-3 top-12 max-h-[min(360px,calc(100%-4rem))] w-[min(320px,calc(100%-1.5rem))] overflow-y-auto rounded-lg border border-border/70 bg-background/95 p-3 shadow-[-8px_10px_34px_rgba(0,0,0,0.22)] backdrop-blur-xl"
+            className="pointer-events-auto absolute right-3 top-12 max-h-[min(420px,calc(100%-4rem))] w-[min(320px,calc(100%-1.5rem))] overflow-y-auto rounded-lg border border-border/70 bg-background/95 p-3 shadow-[-8px_10px_34px_rgba(0,0,0,0.22)] backdrop-blur-xl"
             style={{ transformOrigin: 'top right' }}
-            onMouseEnter={() => {
-              clearHideTimer()
-              if (!hasEnoughWidth) setHoveringNarrowTrigger(true)
-            }}
-            onMouseLeave={() => {
-              if (!hasEnoughWidth) scheduleNarrowHide()
-            }}
           >
-            <TodoStatusList tasks={tasks} embedded />
+            <div className="space-y-3">
+              <section className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-medium text-muted-foreground">
+                    {t('runtimeStatus.contextTitle')}
+                  </h3>
+                  {gitSummary.loading ? (
+                    <Loader2 className="size-3.5 animate-spin text-muted-foreground/60" />
+                  ) : null}
+                </div>
+                <div className="space-y-1.5">
+                  <ContextRow
+                    icon={<GitCompare className="size-3.5" />}
+                    label={t('runtimeStatus.changes')}
+                    value={changeLabel}
+                  />
+                  <ContextRow
+                    icon={
+                      context.sshConnectionId ? (
+                        <Server className="size-3.5" />
+                      ) : (
+                        <Laptop className="size-3.5" />
+                      )
+                    }
+                    label={t('runtimeStatus.target')}
+                    value={targetLabel}
+                  />
+                  <ContextRow
+                    icon={<Folder className="size-3.5" />}
+                    label={t('runtimeStatus.workingFolder')}
+                    value={
+                      context.workingFolder
+                        ? compactPath(context.workingFolder)
+                        : t('runtimeStatus.noWorkingFolder')
+                    }
+                    title={context.workingFolder ?? undefined}
+                  />
+                  <ContextRow
+                    icon={<GitBranch className="size-3.5" />}
+                    label={t('runtimeStatus.branch')}
+                    value={branchLabel}
+                  />
+                  <ContextRow
+                    icon={<GitCompare className="size-3.5" />}
+                    label={t('runtimeStatus.commitOrPush')}
+                    value={syncLabel}
+                  />
+                  <ContextRow
+                    icon={<Folder className="size-3.5" />}
+                    label={t('runtimeStatus.sources')}
+                    value={sourceLabel}
+                    title={sourceTitle || undefined}
+                    valueClassName={
+                      sourceFiles.length === 0 ? 'text-muted-foreground/70' : undefined
+                    }
+                  />
+                </div>
+              </section>
+
+              <div className="h-px bg-border/70" />
+
+              <section className="space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <ListChecks className="size-3.5" />
+                  <span>{t('runtimeStatus.progressTitle')}</span>
+                </div>
+                {tasks.length > 0 ? (
+                  <TodoStatusList tasks={tasks} embedded />
+                ) : (
+                  <div className="rounded-md border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground/65">
+                    {t('runtimeStatus.noTasks')}
+                  </div>
+                )}
+              </section>
+            </div>
           </motion.aside>
         ) : null}
       </AnimatePresence>

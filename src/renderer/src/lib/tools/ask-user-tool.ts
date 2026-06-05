@@ -1,4 +1,3 @@
-import { toast } from 'sonner'
 import i18n from '@renderer/locales'
 import { toolRegistry } from '../agent/tool-registry'
 import type { ToolDefinition } from '../api/types'
@@ -550,13 +549,6 @@ const askUserToolExecute: ToolHandler['execute'] = async (input, ctx) => {
       }),
       toolUseId
     })
-    toast.warning(
-      i18n.t('askUser.backgroundToast', {
-        ns: 'chat',
-        defaultValue: 'Background session is waiting for your choice'
-      }),
-      { description: sessionTitle }
-    )
   }
 
   const payload = await new Promise<AskUserResolvedPayload>((resolve) => {

@@ -142,14 +142,9 @@ function FilePreviewShell({
   maxHeight?: number
   children: React.ReactNode
 }): React.JSX.Element {
-  const bodyTone =
-    tone === 'create'
-      ? 'border-l-emerald-500 bg-emerald-50/80 dark:border-l-emerald-500/80 dark:bg-emerald-950/15'
-      : 'border-l-amber-500 bg-zinc-50/80 dark:border-l-amber-500/80 dark:bg-[#111214]'
-
   return (
-    <div className="overflow-hidden rounded-md border border-border/60 bg-background shadow-sm dark:border-white/[0.06] dark:bg-[#1f1f1f]">
-      <div className="flex h-8 items-center justify-between gap-3 border-b border-border/60 bg-zinc-50 px-3 dark:border-white/[0.06] dark:bg-[#262626]">
+    <div className="overflow-hidden rounded-md bg-transparent">
+      <div className="flex min-h-7 items-center justify-between gap-3 px-3 py-1">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className="truncate text-[11px] font-medium text-muted-foreground"
@@ -168,7 +163,8 @@ function FilePreviewShell({
         <CompactDiffCopyButton text={copyText} />
       </div>
       <div
-        className={cn('overflow-auto border-l-4', bodyTone)}
+        className="overflow-auto rounded-md bg-transparent"
+        data-tone={tone}
         style={{ maxHeight, fontFamily: MONO_FONT }}
       >
         {children}
@@ -202,13 +198,10 @@ function CodeFrame({
       {lines.map((line, index) => (
         <div
           key={`${index}-${line.length}`}
-          className="grid min-w-full border-b border-border/30 last:border-b-0 dark:border-white/[0.03]"
+          className="grid min-w-full"
           style={{ gridTemplateColumns: `${lineNumberWidth}px max-content` }}
         >
-          <span
-            className="select-none border-r border-border/60 px-2 py-0 text-right dark:border-white/[0.06]"
-            style={{ color: lineNumberColor }}
-          >
+          <span className="select-none px-2 py-0 text-right" style={{ color: lineNumberColor }}>
             {index + 1}
           </span>
           <span className="whitespace-pre px-3 py-0 pr-8 text-foreground/85 dark:text-zinc-200">
@@ -425,16 +418,14 @@ function CompactEditDiff({
       <div
         key={key}
         className={cn(
-          'grid min-w-full border-b border-white/50 text-[11px] leading-5 last:border-b-0 dark:border-white/[0.03]',
-          line.type === 'add' && 'bg-emerald-50/95 dark:bg-emerald-950/20',
-          line.type === 'del' && 'bg-red-50/95 dark:bg-red-950/20',
+          'grid min-w-full bg-transparent text-[11px] leading-5',
           line.type === 'keep' && 'bg-transparent'
         )}
         style={{ gridTemplateColumns: '46px max-content' }}
       >
         <span
           className={cn(
-            'select-none border-r border-border/60 px-2 py-1 text-right dark:border-white/[0.06]',
+            'select-none px-2 py-1 text-right',
             line.type === 'add' && 'text-emerald-600 dark:text-emerald-300',
             line.type === 'del' && 'text-red-600 dark:text-red-300',
             line.type === 'keep' && 'text-muted-foreground dark:text-zinc-500'
@@ -475,7 +466,7 @@ function CompactEditDiff({
             <button
               key={`compact-inline-collapsed-${ci}`}
               type="button"
-              className="flex min-w-full items-center justify-center border-y border-border/60 bg-white/50 px-3 py-2 text-[10px] text-muted-foreground transition-colors hover:bg-white/80 hover:text-foreground dark:border-white/[0.06] dark:bg-white/[0.03] dark:text-zinc-500 dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
+              className="flex min-w-full items-center justify-center bg-transparent px-3 py-2 text-[10px] text-muted-foreground transition-colors hover:bg-white/50 hover:text-foreground dark:text-zinc-500 dark:hover:bg-white/[0.04] dark:hover:text-zinc-200"
               onClick={() => setExpandedChunks((prev) => new Set([...prev, ci]))}
             >
               {t('toolCall.unchangedLines', {
@@ -718,10 +709,10 @@ function WriteRealtimeStats({
       {resolvedWrite.lineTotal > 0 && (
         <span
           className={cn(
-            'rounded border px-1.5 py-0.5 font-medium',
+            'rounded px-1.5 py-0.5 font-medium',
             isCreate
-              ? 'border-emerald-500/15 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
-              : 'border-amber-500/15 bg-amber-500/10 text-amber-600 dark:text-amber-300'
+              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
+              : 'bg-amber-500/10 text-amber-600 dark:text-amber-300'
           )}
           title={t('fileChange.lineCount', { count: resolvedWrite.lineTotal })}
         >
@@ -732,7 +723,7 @@ function WriteRealtimeStats({
       )}
       {charTotal > 0 && (
         <span
-          className="hidden rounded border border-border/40 bg-background/65 px-1.5 py-0.5 text-muted-foreground/75 dark:bg-white/[0.04] sm:inline"
+          className="hidden rounded bg-background/45 px-1.5 py-0.5 text-muted-foreground/75 dark:bg-white/[0.04] sm:inline"
           title={t('fileChange.charCount', { count: charTotal })}
         >
           {t('fileChange.compactCharCount', { value: formatCompactCount(charTotal) })}
@@ -843,7 +834,7 @@ function SnapshotSummaryNotice({
       {children}
       {after.previewText && (
         <pre
-          className="overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-background/80 px-2.5 py-2 text-[11px] text-foreground/85 dark:border-zinc-800/80 dark:bg-[#111214] dark:text-zinc-200"
+          className="overflow-auto whitespace-pre-wrap break-words rounded-md bg-transparent px-2.5 py-2 text-[11px] text-foreground/85 dark:text-zinc-200"
           style={{ fontFamily: MONO_FONT, maxHeight: '180px' }}
         >
           {after.previewText}
@@ -861,8 +852,6 @@ function PendingEditPreview({ input }: { input: Record<string, unknown> }): Reac
   const explanation = input.explanation ? String(input.explanation) : null
   const oldStr = typeof input.old_string === 'string' ? input.old_string : ''
   const newStr = typeof input.new_string === 'string' ? input.new_string : ''
-  const oldPreview =
-    typeof input.old_string_preview === 'string' ? input.old_string_preview : oldStr
   const newPreview =
     typeof input.new_string_preview === 'string' ? input.new_string_preview : newStr
   const oldChars =
@@ -871,35 +860,37 @@ function PendingEditPreview({ input }: { input: Record<string, unknown> }): Reac
     typeof input.new_string_chars === 'number' ? input.new_string_chars : newStr.length
   const showingExcerpt = Boolean(input.old_string_truncated || input.new_string_truncated)
   const hasCounts = oldChars > 0 || newChars > 0
-  const hasDiffPreview = Boolean(oldPreview || newPreview)
+  const hasNewPreview = Boolean(newPreview)
 
   return (
-    <div className="space-y-2 px-3 py-3 text-[11px] text-foreground/85 dark:text-zinc-300">
-      <div className="flex flex-wrap items-center gap-2">
-        {filePath && !hasDiffPreview && (
-          <span
-            className="font-mono text-[10px] text-muted-foreground dark:text-zinc-500"
-            style={{ fontFamily: MONO_FONT }}
-          >
-            {shortPath(filePath)}
-          </span>
+    <div className="space-y-2 text-[11px] text-foreground/85 dark:text-zinc-300">
+      <div className="space-y-2 px-3 pt-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {filePath && !hasNewPreview && (
+            <span
+              className="font-mono text-[10px] text-muted-foreground dark:text-zinc-500"
+              style={{ fontFamily: MONO_FONT }}
+            >
+              {shortPath(filePath)}
+            </span>
+          )}
+          {hasCounts && (
+            <span className="text-[10px] text-muted-foreground dark:text-zinc-500">
+              {t('fileChange.charTransition', { from: oldChars, to: newChars })}
+            </span>
+          )}
+        </div>
+        {explanation && (
+          <p className="text-[11px] text-muted-foreground dark:text-zinc-400">{explanation}</p>
         )}
-        {hasCounts && (
-          <span className="text-[10px] text-muted-foreground dark:text-zinc-500">
-            {t('fileChange.charTransition', { from: oldChars, to: newChars })}
-          </span>
+        {showingExcerpt && (
+          <p className="text-[10px] text-muted-foreground/70 dark:text-zinc-600">
+            {t('fileChange.showingExcerpt')}
+          </p>
         )}
       </div>
-      {explanation && (
-        <p className="text-[11px] text-muted-foreground dark:text-zinc-400">{explanation}</p>
-      )}
-      {showingExcerpt && (
-        <p className="text-[10px] text-muted-foreground/70 dark:text-zinc-600">
-          {t('fileChange.showingExcerpt')}
-        </p>
-      )}
-      {hasDiffPreview && (
-        <CompactEditDiff oldStr={oldPreview || ''} newStr={newPreview || ''} filePath={filePath} />
+      {hasNewPreview && (
+        <NewFileContent content={newPreview} filePath={filePath} isStreaming tone="edit" />
       )}
     </div>
   )
@@ -1024,7 +1015,11 @@ function PendingWritePreview({
   const previewBase =
     content ?? (previewTail ? `${preview ?? ''}\n...\n${previewTail}` : preview) ?? ''
   const visiblePreview =
-    previewBase && input.content_truncated && !previewTail && content === null
+    previewBase &&
+    input.content_truncated &&
+    !previewTail &&
+    content === null &&
+    !previewBase.startsWith('…')
       ? `${previewBase}\n...`
       : previewBase
 
@@ -1196,7 +1191,7 @@ export function FileChangeCard({
   const isActive = status === 'streaming' || status === 'running' || status === 'pending_approval'
   const isRealtimeWrite =
     name === 'Write' && !trackedChange && (status === 'streaming' || status === 'running')
-  const [collapsed, setCollapsed] = React.useState(isRealtimeWrite || !isActive)
+  const [collapsed, setCollapsed] = React.useState(!isActive)
   const undoFileChange = useAgentStore((state) => state.undoFileChange)
   const [isUndoingFile, setIsUndoingFile] = React.useState(false)
 
@@ -1246,14 +1241,7 @@ export function FileChangeCard({
     [resolvedEdit, trackedChange]
   )
   const useCompactChangeLayout = name === 'Edit' || name === 'Delete' || name === 'Write'
-  const compactActiveShellClass =
-    status === 'pending_approval'
-      ? 'my-0.5 rounded-lg border border-amber-500/25 bg-amber-500/[0.035] dark:bg-amber-500/[0.045]'
-      : compactActionOp === 'create'
-        ? 'my-0.5 rounded-lg border border-emerald-500/25 bg-emerald-500/[0.035] dark:bg-emerald-500/[0.045]'
-        : compactActionOp === 'delete'
-          ? 'my-0.5 rounded-lg border border-red-500/25 bg-red-500/[0.035] dark:bg-red-500/[0.045]'
-          : 'my-0.5 rounded-lg border border-amber-500/25 bg-amber-500/[0.035] dark:bg-amber-500/[0.045]'
+  const compactActiveShellClass = 'bg-transparent'
   const canRenderTrackedWriteDiff =
     !!trackedChange &&
     trackedChange.op === 'modify' &&

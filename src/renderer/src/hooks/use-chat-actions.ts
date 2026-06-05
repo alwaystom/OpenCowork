@@ -197,6 +197,7 @@ const sessionAbortControllers = new Map<string, AbortController>()
 const sessionSidecarRunIds = new Map<string, string>()
 const continuingToolExecutionSessions = new Set<string>()
 const pendingGoalContinuationSessions = new Set<string>()
+const scheduledGoalContinuationSessions = new Set<string>()
 /** Per-session id of the synthetic system message rendered while compression is in flight. */
 const sessionCompressionPlaceholderIds = new Map<string, string>()
 installSessionControlSyncListener((event) => {
@@ -1989,6 +1990,12 @@ let _sendMessageFn:
 
 function tryDispatchPendingGoalContinuation(sessionId: string): boolean {
   if (!pendingGoalContinuationSessions.has(sessionId)) return false
+  if (scheduledGoalContinuationSessions.has(sessionId)) return true
+  const currentGoal = useGoalStore.getState().getGoalBySession(sessionId)
+  if (currentGoal && currentGoal.status !== 'active') {
+    pendingGoalContinuationSessions.delete(sessionId)
+    return false
+  }
   if (!_sendMessageFn) return false
   if (useUIStore.getState().isPlanModeEnabled(sessionId)) return false
   if (hasActiveSessionRun(sessionId)) return false
@@ -1996,11 +2003,58 @@ function tryDispatchPendingGoalContinuation(sessionId: string): boolean {
     return false
   }
 
+  const sendMessage = _sendMessageFn
+  if (!sendMessage) return false
   pendingGoalContinuationSessions.delete(sessionId)
+  scheduledGoalContinuationSessions.add(sessionId)
   queueMicrotask(() => {
-    void _sendMessageFn?.('', undefined, 'continue', sessionId, null)
+    if (!scheduledGoalContinuationSessions.has(sessionId)) return
+    void sendMessage('', undefined, 'continue', sessionId, null)
+      .catch((error) => {
+        console.warn('[ChatActions] Failed to dispatch goal continuation:', error)
+      })
+      .finally(() => {
+        scheduledGoalContinuationSessions.delete(sessionId)
+        tryDispatchPendingGoalContinuation(sessionId)
+      })
   })
   return true
+}
+
+function clearGoalContinuationState(sessionId: string): void {
+  pendingGoalContinuationSessions.delete(sessionId)
+  scheduledGoalContinuationSessions.delete(sessionId)
+}
+
+let goalContinuationListenerCount = 0
+let stopGoalContinuationListener: (() => void) | null = null
+
+function acquireGoalContinuationListener(): () => void {
+  goalContinuationListenerCount += 1
+
+  if (!stopGoalContinuationListener) {
+    stopGoalContinuationListener = ipcClient.on('goal:continue-requested', (payload: unknown) => {
+      const sessionId =
+        payload && typeof payload === 'object'
+          ? (payload as { sessionId?: unknown }).sessionId
+          : undefined
+      if (typeof sessionId !== 'string' || !sessionId.trim()) return
+      const currentGoal = useGoalStore.getState().getGoalBySession(sessionId)
+      if (currentGoal && currentGoal.status !== 'active') {
+        clearGoalContinuationState(sessionId)
+        return
+      }
+      pendingGoalContinuationSessions.add(sessionId)
+      tryDispatchPendingGoalContinuation(sessionId)
+    })
+  }
+
+  return () => {
+    goalContinuationListenerCount = Math.max(0, goalContinuationListenerCount - 1)
+    if (goalContinuationListenerCount > 0) return
+    stopGoalContinuationListener?.()
+    stopGoalContinuationListener = null
+  }
 }
 
 /** Queue of teammate messages to lead waiting to be processed */
@@ -2203,7 +2257,7 @@ function dispatchNextQueuedMessage(sessionId: string): boolean {
 
 export function dispatchNextQueuedMessageForSession(sessionId: string): boolean {
   setPendingSessionDispatchPaused(sessionId, false)
-  return dispatchNextQueuedMessage(sessionId)
+  return dispatchNextQueuedMessage(sessionId) || tryDispatchPendingGoalContinuation(sessionId)
 }
 
 function abortTeamForSession(sessionId: string, clearPendingApprovals = false): void {
@@ -2220,6 +2274,7 @@ function abortTeamForSession(sessionId: string, clearPendingApprovals = false): 
 
 function finishStoppingSession(sessionId: string): void {
   setPendingSessionDispatchPaused(sessionId, true)
+  clearGoalContinuationState(sessionId)
 
   const ac = sessionAbortControllers.get(sessionId)
   if (ac) {
@@ -5203,15 +5258,7 @@ export function useChatActions(): {
   }, [])
 
   useEffect(() => {
-    return ipcClient.on('goal:continue-requested', (payload: unknown) => {
-      const sessionId =
-        payload && typeof payload === 'object'
-          ? (payload as { sessionId?: unknown }).sessionId
-          : undefined
-      if (typeof sessionId !== 'string' || !sessionId.trim()) return
-      pendingGoalContinuationSessions.add(sessionId)
-      tryDispatchPendingGoalContinuation(sessionId)
-    })
+    return acquireGoalContinuationListener()
   }, [])
 
   useEffect(() => {

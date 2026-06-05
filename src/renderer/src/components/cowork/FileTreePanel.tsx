@@ -914,11 +914,17 @@ export function FileTreePanel({
 
   const handleDelete = useCallback(
     async (nodePath: string, nodeName: string, isDir: boolean) => {
+      const type = isDir ? t('fileTree.folder') : t('fileTree.file')
       const confirmed = await confirm({
-        title: t('fileTree.deleteConfirm', {
-          type: isDir ? t('fileTree.folder') : t('fileTree.file'),
-          name: nodeName
+        title: t('fileTree.deleteConfirmTitle', {
+          type,
+          defaultValue: 'Delete {{type}}?'
         }),
+        description: t('fileTree.deleteConfirmDescription', {
+          name: nodeName,
+          defaultValue: 'Delete "{{name}}"?'
+        }),
+        confirmLabel: t('action.delete', { ns: 'common' }),
         variant: 'destructive'
       })
       if (!confirmed) return

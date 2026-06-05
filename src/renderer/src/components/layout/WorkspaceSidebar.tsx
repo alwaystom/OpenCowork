@@ -392,8 +392,13 @@ export function WorkspaceSidebar(): React.JSX.Element {
       .join('\u0000')
   )
   const activeTeamSessionId = useTeamStore((state) => state.activeTeam?.sessionId ?? null)
-  const unreadCountsBySession = useBackgroundSessionStore((state) => state.unreadCountsBySession)
-  const blockedCountsBySession = useBackgroundSessionStore((state) => state.blockedCountsBySession)
+  const waitingReplySessionIdsSig = useBackgroundSessionStore((state) => {
+    const ids = new Set<string>()
+    for (const item of state.inboxItems) {
+      if (item.type === 'ask_user') ids.add(item.sessionId)
+    }
+    return [...ids].sort().join('\u0000')
+  })
   const language = useSettingsStore((state) => state.language)
   const importSessionInputRef = useRef<HTMLInputElement>(null)
   const importProjectInputRef = useRef<HTMLInputElement>(null)
@@ -432,6 +437,10 @@ export function WorkspaceSidebar(): React.JSX.Element {
     () =>
       new Set(runningBackgroundSessionIdsSig ? runningBackgroundSessionIdsSig.split('\u0000') : []),
     [runningBackgroundSessionIdsSig]
+  )
+  const waitingReplySessionIds = useMemo(
+    () => new Set(waitingReplySessionIdsSig ? waitingReplySessionIdsSig.split('\u0000') : []),
+    [waitingReplySessionIdsSig]
   )
   const streamingSessionIds = useMemo(
     () => new Set(streamingSessionIdsSig ? streamingSessionIdsSig.split('\u0000') : []),
@@ -940,8 +949,7 @@ export function WorkspaceSidebar(): React.JSX.Element {
       runningBackgroundSessionIds.has(session.id) ||
       streamingSessionIds.has(session.id) ||
       activeTeamSessionId === session.id
-    const unreadCount = unreadCountsBySession[session.id] ?? 0
-    const blockedCount = blockedCountsBySession[session.id] ?? 0
+    const hasWaitingReply = waitingReplySessionIds.has(session.id)
     const pendingCount = getPendingSessionMessageCountForSession(session.id)
     const canClearSession = session.messageCount > 0 || pendingCount > 0
 
@@ -974,14 +982,9 @@ export function WorkspaceSidebar(): React.JSX.Element {
               {session.title}
             </span>
             <span className="ml-auto flex shrink-0 items-center gap-1">
-              {blockedCount > 0 && (
-                <span className="rounded-full bg-amber-500/12 px-1.5 py-0.5 text-[9px] font-medium text-amber-600 dark:text-amber-400">
-                  {blockedCount > 99 ? '99+' : blockedCount}
-                </span>
-              )}
-              {unreadCount > 0 && (
-                <span className="rounded-full bg-sky-500/12 px-1.5 py-0.5 text-[9px] font-medium text-sky-600 dark:text-sky-400">
-                  {unreadCount > 99 ? '99+' : unreadCount}
+              {hasWaitingReply && (
+                <span className="whitespace-nowrap rounded-full bg-amber-500/12 px-1.5 py-0.5 text-[9px] font-medium text-amber-600 dark:text-amber-400">
+                  {t('sidebar.waitingReply', { defaultValue: 'Waiting reply' })}
                 </span>
               )}
               {pendingCount > 0 && (

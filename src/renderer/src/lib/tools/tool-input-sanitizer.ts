@@ -55,6 +55,14 @@ function excerptAroundRange(text: string, start: number, end: number, maxChars: 
   return `${prefix}${slice}${suffix}`
 }
 
+function tailPreview(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  const slice = text.slice(-maxChars)
+  const firstLineBreak = slice.indexOf('\n')
+  const body = firstLineBreak > 0 ? slice.slice(firstLineBreak + 1) : slice
+  return body ? `…\n${body}` : '…'
+}
+
 function buildEditPreviewPair(
   oldStr: string,
   newStr: string,
@@ -148,7 +156,9 @@ function compactMultiEditInputForHistory(input: Record<string, unknown>): Record
   }
 }
 
-function compactNotebookEditInputForHistory(input: Record<string, unknown>): Record<string, unknown> {
+function compactNotebookEditInputForHistory(
+  input: Record<string, unknown>
+): Record<string, unknown> {
   const source = typeof input.new_source === 'string' ? input.new_source : input.source
   if (typeof source !== 'string') return input
 
@@ -201,24 +211,25 @@ export function compactStreamingToolInput(input: Record<string, unknown>): Recor
 
     const oldStr = typeof input.old_string === 'string' ? input.old_string : ''
     const newStr = typeof input.new_string === 'string' ? input.new_string : ''
-    const { oldPreview, newPreview } = buildEditPreviewPair(oldStr, newStr)
 
     if (typeof input.old_string === 'string') {
-      compact.old_string_preview = oldPreview
+      compact.old_string_preview = tailPreview(oldStr, EDIT_TOOL_PREVIEW_CHARS)
       compact.old_string_chars = oldStr.length
+      compact.old_string_lines = lineCount(oldStr)
       if (oldStr.length > EDIT_TOOL_PREVIEW_CHARS) compact.old_string_truncated = true
     }
 
     if (typeof input.new_string === 'string') {
-      compact.new_string_preview = newPreview
+      compact.new_string_preview = tailPreview(newStr, EDIT_TOOL_PREVIEW_CHARS)
       compact.new_string_chars = newStr.length
+      compact.new_string_lines = lineCount(newStr)
       if (newStr.length > EDIT_TOOL_PREVIEW_CHARS) compact.new_string_truncated = true
     }
   }
 
   if (hasWritePayload) {
     const content = String(input.content)
-    compact.content_preview = content.slice(0, WRITE_TOOL_PREVIEW_CHARS)
+    compact.content_preview = tailPreview(content, WRITE_TOOL_PREVIEW_CHARS)
     compact.content_lines = content.length === 0 ? 0 : lineCount(content)
     compact.content_chars = content.length
     if (content.length > WRITE_TOOL_PREVIEW_CHARS) compact.content_truncated = true

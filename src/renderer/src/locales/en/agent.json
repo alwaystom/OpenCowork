@@ -10,6 +10,8 @@
     "summaryTitle": "Compressed Context Summary",
     "summaryMessages": "{{count}} earlier messages",
     "summaryRecentPreserved": "Recent messages preserved",
+    "summaryExpand": "Expand summary",
+    "summaryCollapse": "Collapse summary",
     "compressing": "Compressing context…",
     "compressed": "Context compressed",
     "compressedDetail": "{{count}} messages compressed",

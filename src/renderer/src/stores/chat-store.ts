@@ -1184,6 +1184,50 @@ function clampRequestContext(
   return messages.slice(boundary)
 }
 
+function isRequestCompactBoundaryMessage(message: UnifiedMessage): boolean {
+  return message.role === 'system' && !!message.meta?.compactBoundary
+}
+
+function isRequestCompactSummaryMessage(message: UnifiedMessage): boolean {
+  return message.role === 'user' && !!message.meta?.compactSummary
+}
+
+function hasCompactSummaryAfterBoundary(
+  messages: UnifiedMessage[],
+  boundaryIndex: number
+): boolean {
+  for (let index = boundaryIndex + 1; index < messages.length; index += 1) {
+    if (isRequestCompactBoundaryMessage(messages[index])) {
+      return false
+    }
+    if (isRequestCompactSummaryMessage(messages[index])) {
+      return true
+    }
+  }
+  return false
+}
+
+function isUiOnlyRequestMessage(message: UnifiedMessage): boolean {
+  if (message.role !== 'system') return false
+  if (message.meta?.compressionStatus) return true
+  if (message.meta?.compactBoundary) return false
+  if (typeof message.content === 'string') return message.content.trim().length === 0
+  return Array.isArray(message.content) && message.content.length === 0
+}
+
+function applyLatestCompactRequestView(messages: UnifiedMessage[]): UnifiedMessage[] {
+  let latestBoundaryIndex = -1
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (!isRequestCompactBoundaryMessage(messages[index])) continue
+    if (!hasCompactSummaryAfterBoundary(messages, index)) continue
+    latestBoundaryIndex = index
+    break
+  }
+
+  const compactView = latestBoundaryIndex >= 0 ? messages.slice(latestBoundaryIndex) : messages
+  return compactView.filter((message) => !isUiOnlyRequestMessage(message))
+}
+
 function mergeResidentTailWithFetchedPrefix(
   residentMessages: UnifiedMessage[],
   fetchedMessages: UnifiedMessage[],
@@ -2145,7 +2189,7 @@ export const useChatStore = create<ChatStore>()(
 
       let messages = await loadRequestContextMessages(session, options?.requestContextMaxMessages)
       const sanitized = sanitizeToolBlocksForResend(messages)
-      messages = sanitized.messages
+      messages = applyLatestCompactRequestView(sanitized.messages)
 
       // Always strip empty assistant messages — they cause API errors ("must not be empty").
       // When includeTrailingAssistantPlaceholder is true we still keep a trailing assistant

@@ -41,6 +41,7 @@ import {
   type SessionGoalEvent,
   type SessionGoalEventType
 } from '@renderer/stores/goal-store'
+import { abortSession, dispatchNextQueuedMessageForSession } from '@renderer/hooks/use-chat-actions'
 
 const BLOCKER_EVENT_TYPES = new Set<SessionGoalEventType>([
   'usage_limited',
@@ -312,6 +313,12 @@ function useGoalActions(
         toast.info(t('goal.toasts.budgetStillExhausted'), {
           description: t('goal.toasts.increaseBudget')
         })
+      }
+      if (status === 'active' && result.goal?.status === 'active') {
+        dispatchNextQueuedMessageForSession(sessionId)
+      }
+      if (status === 'paused' && result.goal?.status === 'paused') {
+        abortSession(sessionId)
       }
     },
     [sessionId, t]

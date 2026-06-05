@@ -6,6 +6,7 @@ import {
   Download,
   FolderOpen,
   HelpCircle,
+  ListChecks,
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
@@ -80,9 +81,8 @@ export function TitleBar({
   const toggleLeftSidebar = useUIStore((s) => s.toggleLeftSidebar)
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen)
   const toggleRightPanel = useUIStore((s) => s.toggleRightPanel)
-  const setRuntimeStatusPanelTriggerHovered = useUIStore(
-    (s) => s.setRuntimeStatusPanelTriggerHovered
-  )
+  const runtimeStatusPanelOpen = useUIStore((s) => s.runtimeStatusPanelOpen)
+  const toggleRuntimeStatusPanel = useUIStore((s) => s.toggleRuntimeStatusPanel)
   const workingFolderSheetOpen = useUIStore((s) => s.workingFolderSheetOpen)
   const toggleWorkingFolderSheet = useUIStore((s) => s.toggleWorkingFolderSheet)
   const setBottomTerminalDockOpen = useUIStore((s) => s.setBottomTerminalDockOpen)
@@ -176,6 +176,7 @@ export function TitleBar({
     availableModeOptions[0] ??
     allModeOptions[0]!
   const showInspectorToggle = chatSurfaceActive && chatView === 'session'
+  const showRuntimeStatusToggle = chatSurfaceActive && chatView === 'session'
   const showFileManagerToggle =
     chatSurfaceActive && chatView === 'session' && Boolean(sessionContext.sessionProjectId)
   const canOpenFileManager = Boolean(sessionContext.sessionWorkingFolder)
@@ -187,7 +188,10 @@ export function TitleBar({
     sessionContext.terminalWorkingFolder || sessionContext.terminalSshConnectionId
   )
   const showProjectToolGroup =
-    showProjectTerminalToggle || showFileManagerToggle || showInspectorToggle
+    showRuntimeStatusToggle ||
+    showProjectTerminalToggle ||
+    showFileManagerToggle ||
+    showInspectorToggle
   const projectToolButtonClass =
     'workspace-titlebar-toolbutton titlebar-no-drag inline-flex size-[30px] items-center justify-center rounded-[11px] transition-all'
 
@@ -357,6 +361,27 @@ export function TitleBar({
 
         {showProjectToolGroup && (
           <div className="titlebar-no-drag flex items-center gap-1">
+            {showRuntimeStatusToggle && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-pressed={runtimeStatusPanelOpen}
+                    data-active={runtimeStatusPanelOpen ? 'true' : 'false'}
+                    className={projectToolButtonClass}
+                    onClick={toggleRuntimeStatusPanel}
+                  >
+                    <ListChecks className="size-[14px]" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {runtimeStatusPanelOpen
+                    ? t('topbar.closeRuntimeStatus')
+                    : t('topbar.openRuntimeStatus')}
+                </TooltipContent>
+              </Tooltip>
+            )}
+
             {showProjectTerminalToggle && sessionContext.terminalProjectId && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -425,10 +450,6 @@ export function TitleBar({
                     aria-pressed={rightPanelOpen}
                     data-active={rightPanelOpen ? 'true' : 'false'}
                     className={projectToolButtonClass}
-                    onMouseEnter={() => setRuntimeStatusPanelTriggerHovered(true)}
-                    onMouseLeave={() => setRuntimeStatusPanelTriggerHovered(false)}
-                    onFocus={() => setRuntimeStatusPanelTriggerHovered(true)}
-                    onBlur={() => setRuntimeStatusPanelTriggerHovered(false)}
                     onClick={toggleRightPanel}
                   >
                     {rightPanelOpen ? (

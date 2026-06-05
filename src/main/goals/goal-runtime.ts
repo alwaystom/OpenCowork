@@ -402,18 +402,35 @@ export class GoalRuntimeService {
           )
         }
       } else if (goal.status === 'active') {
-        const blockers = this.buildContinuationBlockers(run)
-        if (blockers.length > 0) {
-          const blocked = await this.noteGoalTurnBlocker({
-            sessionId,
-            goalId: goal.goal_id,
-            blockers,
-            eventType: 'auto_continue_blocked'
-          })
-          requestContinue = !blocked
+        if (run.aborted || run.lastLoopEndReason === 'aborted') {
+          const paused = goalsDao.updateGoal(sessionId, { status: 'paused' })
+          if (paused) {
+            this.resetBlockedAudit(sessionId, paused.goal_id)
+            emitGoalUpdated(paused, 'goal-stall-paused')
+            emitGoalEventAdded(
+              goalsDao.addGoalEvent({
+                sessionId,
+                goalId: paused.goal_id,
+                eventType: 'stall_paused',
+                message: 'the user stopped the run'
+              }),
+              'goal-stall-paused'
+            )
+          }
         } else {
-          this.resetBlockedAudit(sessionId, goal.goal_id)
-          requestContinue = true
+          const blockers = this.buildContinuationBlockers(run)
+          if (blockers.length > 0) {
+            const blocked = await this.noteGoalTurnBlocker({
+              sessionId,
+              goalId: goal.goal_id,
+              blockers,
+              eventType: 'auto_continue_blocked'
+            })
+            requestContinue = !blocked
+          } else {
+            this.resetBlockedAudit(sessionId, goal.goal_id)
+            requestContinue = true
+          }
         }
       } else if (goal.status !== 'blocked') {
         this.resetBlockedAudit(sessionId, goal.goal_id)

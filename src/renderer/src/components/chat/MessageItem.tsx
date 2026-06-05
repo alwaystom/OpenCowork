@@ -5,6 +5,7 @@ import { SlideIn } from '@renderer/components/animate-ui'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ContextCompressionMessage } from './ContextCompressionMessage'
+import { CompressionStatusMessage } from './CompressionStatusMessage'
 import type { UnifiedMessage, ToolResultContent } from '@renderer/lib/api/types'
 import type { RequestRetryState, ToolCallState } from '@renderer/lib/agent/types'
 import type { EditableUserMessageDraft } from '@renderer/lib/image-attachments'
@@ -172,6 +173,9 @@ function MessageItemInner({
           />
         )
       case 'system':
+        if (message.meta?.compressionStatus) {
+          return <CompressionStatusMessage message={message} />
+        }
         return <ContextCompressionMessage message={message} />
       default:
         return null

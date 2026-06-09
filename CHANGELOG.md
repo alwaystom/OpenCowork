@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.116] - 2026-06-09
+
+### Added
+
+- Added shell environment variable management in Settings with localized labels and IPC support.
+
+### Changed
+
+- Scoped session change summary cards to the current assistant message and its tool calls so earlier assistant messages can show their own file-change summaries.
+- Improved terminal environment handling so configured shell variables are applied when launching terminal sessions.
+
 ## [0.9.115] - 2026-06-08
 
 ### Added

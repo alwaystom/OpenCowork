@@ -147,6 +147,21 @@ export const routinAiPreset: BuiltinProviderPreset = {
         disabledBodyParams: { thinking: { type: 'disabled' } }
       }
     },
+    {
+      id: 'mimo-v2.5-pro-ultraspeed',
+      name: 'MiMo V2.5 Pro UltraSpeed',
+      icon: 'mimo',
+      enabled: true,
+      contextLength: 1_000_000,
+      maxOutputTokens: 131_072,
+      supportsVision: false,
+      supportsFunctionCall: true,
+      supportsThinking: true,
+      thinkingConfig: {
+        bodyParams: { thinking: { type: 'enabled' } },
+        disabledBodyParams: { thinking: { type: 'disabled' } }
+      }
+    },
     // ── OpenAI — GPT-4o family (cache: 50% off input) ──
     {
       id: 'gpt-4o',
@@ -1490,6 +1505,7 @@ const ROUTIN_AI_PLAN_MODEL_ORDER = [
   'gpt-5.4-mini',
   'gpt-5.4',
   'gpt-5.5',
+  'mimo-v2.5-pro-ultraspeed',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',

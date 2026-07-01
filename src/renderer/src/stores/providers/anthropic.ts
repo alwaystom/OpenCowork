@@ -8,6 +8,28 @@ export const anthropicPreset: BuiltinProviderPreset = {
   homepage: 'https://anthropic.com',
   apiKeyUrl: 'https://console.anthropic.com/settings/keys',
   defaultModels: [
+    // Claude Sonnet 5 (latest Sonnet — adaptive thinking, 1M context)
+    {
+      id: 'claude-sonnet-5',
+      name: 'Claude Sonnet 5',
+      icon: 'claude',
+      enabled: true,
+      contextLength: 1_000_000,
+      maxOutputTokens: 128_000,
+      supportsVision: true,
+      supportsFunctionCall: true,
+      inputPrice: 2,
+      outputPrice: 10,
+      cacheCreationPrice: 2.5,
+      cacheHitPrice: 0.2,
+      supportsThinking: true,
+      thinkingConfig: {
+        bodyParams: { thinking: { type: 'adaptive' } },
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high', 'max'],
+        defaultReasoningEffort: 'high'
+      }
+    },
     // Claude 4.8 (latest flagship — adaptive thinking, 1M context)
     {
       id: 'claude-opus-4-8',

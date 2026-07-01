@@ -577,13 +577,7 @@ internal static partial class AgentRuntimeOpenAIResponsesProvider
         }
 
         var toolUseIds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var toolUse in conversation[assistantIndex].ToolUses)
-        {
-            if (!string.IsNullOrWhiteSpace(toolUse.Id))
-            {
-                toolUseIds.Add(toolUse.Id);
-            }
-        }
+        AddFunctionToolUseIds(conversation[assistantIndex], toolUseIds);
 
         if (toolUseIds.Count == 0)
         {
@@ -599,17 +593,16 @@ internal static partial class AgentRuntimeOpenAIResponsesProvider
                 break;
             }
 
-            if (message.ToolResults.Count == 0)
+            if (!HasToolResultIds(message))
             {
                 break;
             }
 
-            foreach (var toolResult in message.ToolResults)
+            foreach (var toolResultId in EnumerateToolResultIds(message))
             {
-                if (!string.IsNullOrWhiteSpace(toolResult.ToolUseId) &&
-                    toolUseIds.Contains(toolResult.ToolUseId))
+                if (toolUseIds.Contains(toolResultId))
                 {
-                    pairedToolUseIds.Add(toolResult.ToolUseId);
+                    pairedToolUseIds.Add(toolResultId);
                 }
             }
 
@@ -636,17 +629,13 @@ internal static partial class AgentRuntimeOpenAIResponsesProvider
         for (var index = 0; index < conversation.Count; index++)
         {
             var message = conversation[index];
-            if (!string.Equals(message.Role, "assistant", StringComparison.Ordinal) ||
-                message.ToolUses.Count == 0)
+            if (!string.Equals(message.Role, "assistant", StringComparison.Ordinal))
             {
                 continue;
             }
 
-            var toolUseIds = new HashSet<string>(
-                message.ToolUses
-                    .Select(toolUse => toolUse.Id)
-                    .Where(id => !string.IsNullOrWhiteSpace(id)),
-                StringComparer.Ordinal);
+            var toolUseIds = new HashSet<string>(StringComparer.Ordinal);
+            AddFunctionToolUseIds(message, toolUseIds);
             if (toolUseIds.Count == 0)
             {
                 continue;
@@ -661,18 +650,17 @@ internal static partial class AgentRuntimeOpenAIResponsesProvider
                     break;
                 }
 
-                if (candidateMessage.ToolResults.Count == 0)
+                if (!HasToolResultIds(candidateMessage))
                 {
                     break;
                 }
 
-                foreach (var toolResult in candidateMessage.ToolResults)
+                foreach (var toolResultId in EnumerateToolResultIds(candidateMessage))
                 {
-                    if (!string.IsNullOrWhiteSpace(toolResult.ToolUseId) &&
-                        toolUseIds.Contains(toolResult.ToolUseId))
+                    if (toolUseIds.Contains(toolResultId))
                     {
-                        pairedToolUseIds.Add(toolResult.ToolUseId);
-                        validToolUseIds.Add(toolResult.ToolUseId);
+                        pairedToolUseIds.Add(toolResultId);
+                        validToolUseIds.Add(toolResultId);
                     }
                 }
             }
@@ -819,6 +807,67 @@ internal static partial class AgentRuntimeOpenAIResponsesProvider
         }
 
         return !string.IsNullOrWhiteSpace(message.Text) || toolUses.Count > 0 || toolResults.Count > 0;
+    }
+
+    private static void AddFunctionToolUseIds(
+        AgentRuntimeChatMessage message,
+        HashSet<string> toolUseIds)
+    {
+        foreach (var toolUse in message.ToolUses)
+        {
+            if (!string.IsNullOrWhiteSpace(toolUse.Id) &&
+                !IsOpenAIResponsesComputerUseToolUse(toolUse.ExtraContent))
+            {
+                toolUseIds.Add(toolUse.Id);
+            }
+        }
+
+        if (message.ContentBlocks is null)
+        {
+            return;
+        }
+
+        foreach (var block in message.ContentBlocks)
+        {
+            if (JsonHelpers.GetString(block, "type") != "tool_use" ||
+                ReadToolUse(block) is not { } toolUse ||
+                IsOpenAIResponsesComputerUseToolUse(toolUse.ExtraContent))
+            {
+                continue;
+            }
+
+            toolUseIds.Add(toolUse.Id);
+        }
+    }
+
+    private static IEnumerable<string> EnumerateToolResultIds(AgentRuntimeChatMessage message)
+    {
+        foreach (var toolResult in message.ToolResults)
+        {
+            if (!string.IsNullOrWhiteSpace(toolResult.ToolUseId))
+            {
+                yield return toolResult.ToolUseId;
+            }
+        }
+
+        if (message.ContentBlocks is null)
+        {
+            yield break;
+        }
+
+        foreach (var block in message.ContentBlocks)
+        {
+            if (JsonHelpers.GetString(block, "type") == "tool_result" &&
+                JsonHelpers.GetString(block, "toolUseId") is { Length: > 0 } toolUseId)
+            {
+                yield return toolUseId;
+            }
+        }
+    }
+
+    private static bool HasToolResultIds(AgentRuntimeChatMessage message)
+    {
+        return EnumerateToolResultIds(message).Any();
     }
 
     private static int CountToolUses(IReadOnlyList<AgentRuntimeChatMessage> conversation)

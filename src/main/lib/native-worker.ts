@@ -76,6 +76,10 @@ class NativeWorkerManager {
     )
   }
 
+  get processId(): number | null {
+    return this.child?.pid ?? null
+  }
+
   async ensureStarted(): Promise<void> {
     if (this.isRunning) return
     if (!this.startPromise) {

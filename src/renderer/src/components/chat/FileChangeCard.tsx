@@ -22,7 +22,6 @@ import { useAgentStore } from '@renderer/stores/agent-store'
 import { MONO_FONT } from '@renderer/lib/constants'
 import { IPC } from '@renderer/lib/ipc/channels'
 import { invokeMessagePackBinary } from '@renderer/lib/ipc/messagepack-ipc-client'
-import { AnimatePresence, motion } from 'motion/react'
 import { Button } from '@renderer/components/ui/button'
 import { confirm } from '@renderer/components/ui/confirm-dialog'
 import { toMessagePackChannel } from '../../../../shared/messagepack/binary-ipc'
@@ -133,6 +132,7 @@ function FilePreviewShell({
   deleted,
   copyText,
   tone,
+  autoScrollKey,
   maxHeight = 320,
   children
 }: {
@@ -141,9 +141,22 @@ function FilePreviewShell({
   deleted: number
   copyText: string
   tone: FilePreviewTone
+  autoScrollKey?: string | number
   maxHeight?: number
   children: React.ReactNode
 }): React.JSX.Element {
+  const scrollRef = React.useRef<HTMLDivElement>(null)
+
+  React.useEffect(() => {
+    if (autoScrollKey === undefined) return
+    const frame = window.requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (!el) return
+      el.scrollTop = el.scrollHeight
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [autoScrollKey])
+
   return (
     <div className="overflow-hidden rounded-lg border border-border/50 bg-background/85 dark:border-white/[0.08] dark:bg-[#111214]">
       <div className="flex min-h-7 items-center justify-between gap-3 border-b border-border/50 bg-muted/30 px-3 py-1 dark:border-white/[0.08] dark:bg-white/[0.035]">
@@ -165,6 +178,7 @@ function FilePreviewShell({
         <CompactDiffCopyButton text={copyText} />
       </div>
       <div
+        ref={scrollRef}
         className="overflow-auto bg-background dark:bg-[#111214]"
         data-tone={tone}
         style={{ maxHeight, fontFamily: MONO_FONT }}
@@ -800,6 +814,7 @@ function NewFileContent({
         deleted={0}
         copyText={normalizedContent}
         tone={tone}
+        autoScrollKey={isStreaming ? normalizedContent.length : undefined}
         maxHeight={isStreaming ? 400 : 300}
       >
         <CodeFrame content={displayed} filePath={filePath} tone={tone} />
@@ -1222,9 +1237,12 @@ export function FileChangeCard({
   const resolvedEdit = React.useMemo(() => resolveEditPayload(input), [input])
   const resolvedWrite = React.useMemo(() => resolveWritePayload(input), [input])
   const isActive = status === 'streaming' || status === 'running' || status === 'pending_approval'
+  const isLiveFileMutation =
+    (name === 'Write' || name === 'Edit') && (status === 'streaming' || status === 'running')
   const isRealtimeWrite =
     name === 'Write' && !trackedChange && (status === 'streaming' || status === 'running')
   const [collapsed, setCollapsed] = React.useState(!isActive)
+  const wasLiveFileMutationRef = React.useRef(isLiveFileMutation)
   const undoFileChange = useAgentStore((state) => state.undoFileChange)
   const [isUndoingFile, setIsUndoingFile] = React.useState(false)
 
@@ -1370,6 +1388,18 @@ export function FileChangeCard({
     }
   }
 
+  React.useEffect(() => {
+    if (isLiveFileMutation) {
+      setCollapsed(false)
+      wasLiveFileMutationRef.current = true
+      return
+    }
+    if (wasLiveFileMutationRef.current) {
+      setCollapsed(true)
+    }
+    wasLiveFileMutationRef.current = false
+  }, [isLiveFileMutation])
+
   return (
     <div
       className={cn(
@@ -1384,6 +1414,7 @@ export function FileChangeCard({
     >
       <button
         onClick={() => {
+          if (isLiveFileMutation) return
           setCollapsed((v) => !v)
         }}
         className={cn(
@@ -1521,81 +1552,75 @@ export function FileChangeCard({
         )}
       </button>
 
-      <AnimatePresence initial={false}>
-        {!collapsed && hasExpandedContent && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className={cn(
-              'overflow-hidden',
-              useCompactChangeLayout
-                ? 'ml-3 border-l border-border/45 pl-5 pt-1 dark:border-white/[0.08]'
-                : 'activity-card-divider border-t bg-background/40'
-            )}
-          >
-            {showTrackedEditDiff && trackedChange && (
-              <TrackedEditDiff change={trackedChange} filePath={filePath} />
-            )}
-            {showPendingEditPreview && <PendingEditPreview input={input} />}
-            {showSettledCompactEditDiff && compactEditDiff && (
-              <CompactEditDiff
-                oldStr={compactEditDiff.oldStr}
-                newStr={compactEditDiff.newStr}
-                filePath={filePath}
-              />
-            )}
-            {showTrackedWriteInlineDiff && trackedChange && (
-              <InlineDiff
-                oldStr={snapshotText(trackedChange.before)}
-                newStr={snapshotText(trackedChange.after)}
-                filePath={filePath}
-              />
-            )}
-            {showTrackedWriteSnapshotSummary && trackedChange && (
-              <SnapshotSummaryNotice
-                before={trackedChange.before}
-                after={trackedChange.after}
-                filePath={filePath}
-              />
-            )}
-            {showTrackedWriteNewFile && trackedChange && (
-              <NewFileContent
-                content={snapshotText(trackedChange.after)}
-                filePath={filePath}
-                isStreaming={status === 'streaming'}
-              />
-            )}
-            {showTrackedWriteNewFileSummary && trackedChange && (
-              <SnapshotSummaryNotice after={trackedChange.after} filePath={filePath} />
-            )}
-            {showPendingWriteStreaming && (
-              <PendingWritePreview
-                input={input}
-                isStreaming={status === 'streaming'}
-                op={compactActionOp === 'create' ? 'create' : 'modify'}
-              />
-            )}
-            {showSettledWriteModifyPreview && (
-              <PendingWritePreview input={input} isStreaming={false} op="modify" />
-            )}
-            {showSettledWriteNewFile && (
-              <NewFileContent
-                content={resolvedWrite.text || resolvedWrite.preview}
-                filePath={filePath}
-                isStreaming={false}
-              />
-            )}
+      {!collapsed && hasExpandedContent && (
+        <div
+          className={cn(
+            'overflow-hidden',
+            useCompactChangeLayout
+              ? 'ml-3 border-l border-border/45 pl-5 pt-1 dark:border-white/[0.08]'
+              : 'activity-card-divider border-t bg-background/40'
+          )}
+        >
+          {showTrackedEditDiff && trackedChange && (
+            <TrackedEditDiff change={trackedChange} filePath={filePath} />
+          )}
+          {showPendingEditPreview && <PendingEditPreview input={input} />}
+          {showSettledCompactEditDiff && compactEditDiff && (
+            <CompactEditDiff
+              oldStr={compactEditDiff.oldStr}
+              newStr={compactEditDiff.newStr}
+              filePath={filePath}
+            />
+          )}
+          {showTrackedWriteInlineDiff && trackedChange && (
+            <InlineDiff
+              oldStr={snapshotText(trackedChange.before)}
+              newStr={snapshotText(trackedChange.after)}
+              filePath={filePath}
+            />
+          )}
+          {showTrackedWriteSnapshotSummary && trackedChange && (
+            <SnapshotSummaryNotice
+              before={trackedChange.before}
+              after={trackedChange.after}
+              filePath={filePath}
+            />
+          )}
+          {showTrackedWriteNewFile && trackedChange && (
+            <NewFileContent
+              content={snapshotText(trackedChange.after)}
+              filePath={filePath}
+              isStreaming={status === 'streaming'}
+            />
+          )}
+          {showTrackedWriteNewFileSummary && trackedChange && (
+            <SnapshotSummaryNotice after={trackedChange.after} filePath={filePath} />
+          )}
+          {showPendingWriteStreaming && (
+            <PendingWritePreview
+              input={input}
+              isStreaming={status === 'streaming'}
+              op={compactActionOp === 'create' ? 'create' : 'modify'}
+            />
+          )}
+          {showSettledWriteModifyPreview && (
+            <PendingWritePreview input={input} isStreaming={false} op="modify" />
+          )}
+          {showSettledWriteNewFile && (
+            <NewFileContent
+              content={resolvedWrite.text || resolvedWrite.preview}
+              filePath={filePath}
+              isStreaming={false}
+            />
+          )}
 
-            {showDeleteNotice && (
-              <div className="px-3 py-3 text-[11px] text-red-500/80 italic dark:text-red-300/80">
-                {t('fileChange.fileWillBeDeleted')}
-              </div>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+          {showDeleteNotice && (
+            <div className="px-3 py-3 text-[11px] text-red-500/80 italic dark:text-red-300/80">
+              {t('fileChange.fileWillBeDeleted')}
+            </div>
+          )}
+        </div>
+      )}
 
       {trackedChange && !collapsed && (
         <div

@@ -6,12 +6,17 @@ export const SIDECAR_RENDERER_TOOL_REQUEST_MSGPACK_CHANNEL = 'sidecar:renderer-t
 export const SIDECAR_RENDERER_TOOL_RESPONSE_MSGPACK_CHANNEL =
   'sidecar:renderer-tool-response:msgpack'
 
+export const DIAGNOSTICS_MEMORY_SAMPLE_MSGPACK_CHANNEL = 'diagnostics:memory-sample:msgpack'
+
 export const DB_MESSAGES_UPSERT_MSGPACK_CHANNEL = 'db:messages:upsert:msgpack'
 export const DB_MESSAGES_ADD_BATCH_MSGPACK_CHANNEL = 'db:messages:add-batch:msgpack'
 export const DB_MESSAGES_LIST_MSGPACK_CHANNEL = 'db:messages:list:msgpack'
 export const DB_MESSAGES_LIST_USER_MSGPACK_CHANNEL = 'db:messages:list-user:msgpack'
 export const DB_MESSAGES_LIST_PAGE_MSGPACK_CHANNEL = 'db:messages:list-page:msgpack'
+export const DB_MESSAGES_REQUEST_CONTEXT_MSGPACK_CHANNEL = 'db:messages:request-context:msgpack'
+export const DB_MESSAGES_WINDOW_AROUND_MSGPACK_CHANNEL = 'db:messages:window-around:msgpack'
 export const DB_MESSAGES_SEARCH_CONTENT_MSGPACK_CHANNEL = 'db:messages:search-content:msgpack'
+export const DB_MESSAGES_INSERT_ARTIFACTS_MSGPACK_CHANNEL = 'db:messages:insert-artifacts:msgpack'
 export const DB_MESSAGES_UPDATE_MSGPACK_CHANNEL = 'db:messages:update:msgpack'
 export const DB_MESSAGES_CLEAR_MSGPACK_CHANNEL = 'db:messages:clear:msgpack'
 export const DB_MESSAGES_DELETE_MSGPACK_CHANNEL = 'db:messages:delete:msgpack'

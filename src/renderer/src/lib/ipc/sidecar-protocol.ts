@@ -160,8 +160,16 @@ export interface SidecarTranslationContext {
   targetLanguage: string
 }
 
+export interface SidecarContextSource {
+  sessionId: string
+  maxMessages?: number
+  compressionMode?: 'none' | 'auto' | 'force'
+}
+
 export interface SidecarAgentRunRequest {
   messages: SidecarUnifiedMessage[]
+  contextSource?: SidecarContextSource
+  liveOverlayMessages?: SidecarUnifiedMessage[]
   provider: SidecarProviderConfig
   tools: SidecarToolDefinition[]
   webSearch?: SidecarWebSearchConfig
@@ -445,6 +453,8 @@ export function buildSidecarAgentRunRequest(args: {
   providerTurnOnly?: boolean
   includeFullDebugBody?: boolean
   translation?: SidecarTranslationContext
+  contextSource?: SidecarContextSource
+  liveOverlayMessages?: UnifiedMessage[]
 }): SidecarAgentRunRequest | null {
   const provider = mapSidecarProvider(args.provider)
 
@@ -460,9 +470,17 @@ export function buildSidecarAgentRunRequest(args: {
   const imagePluginProvider = args.imagePluginProvider
     ? mapSidecarProvider(args.imagePluginProvider)
     : null
+  const liveOverlayMessages: SidecarUnifiedMessage[] = []
+  for (const message of args.liveOverlayMessages ?? []) {
+    const mapped = mapSidecarMessage(message)
+    if (!mapped) return null
+    liveOverlayMessages.push(mapped)
+  }
 
   return {
     messages,
+    ...(args.contextSource ? { contextSource: args.contextSource } : {}),
+    ...(liveOverlayMessages.length > 0 ? { liveOverlayMessages } : {}),
     provider,
     tools: args.tools.map(mapSidecarTool),
     ...(webSearch ? { webSearch } : {}),

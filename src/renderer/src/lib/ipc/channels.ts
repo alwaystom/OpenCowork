@@ -3,6 +3,7 @@
 export const IPC = {
   // App
   APP_HOMEDIR: 'app:homedir',
+  APP_GLOBAL_MEMORY_HOME: 'app:global-memory-home',
 
   // API events
   API_QUOTA_UPDATE: 'api:quota-update',

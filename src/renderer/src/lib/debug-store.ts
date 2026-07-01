@@ -29,6 +29,14 @@ function evictOldest(): void {
   }
 }
 
+export function shouldKeepFullDebugBody(): boolean {
+  try {
+    return localStorage.getItem('openCowork.debugFullRequestBody') === '1'
+  } catch {
+    return false
+  }
+}
+
 function stripLargeBody(info: RequestDebugInfo): RequestDebugInfo {
   if (!info.body || info.body.length <= MAX_DEBUG_BODY_CHARS) return info
   return {
@@ -88,6 +96,16 @@ export function getRequestDebugStoreStats(): {
   }
 }
 
+export function compactRequestDebugStore(maxChars = MAX_DEBUG_BODY_CHARS): void {
+  for (const [id, trace] of _store.entries()) {
+    if (!trace.debugInfo) continue
+    _store.set(id, {
+      ...trace,
+      debugInfo: truncateRequestDebugPayload(trace.debugInfo, maxChars)
+    })
+  }
+}
+
 function mergeTraceIntoDebugInfo(msgId: string, info: RequestDebugInfo): RequestDebugInfo {
   const trace = _store.get(msgId)
   return {
@@ -125,10 +143,10 @@ export function getRequestTraceInfo(msgId: string): RequestTraceInfo | undefined
 }
 
 export function setLastDebugInfo(msgId: string, info: RequestDebugInfo): void {
-  const devMode = useSettingsStore.getState().devMode
+  const keepFullDebugBody = useSettingsStore.getState().devMode && shouldKeepFullDebugBody()
   const merged = mergeTraceIntoDebugInfo(msgId, info)
-  const debugInfo = devMode ? merged : stripLargeBody(merged)
-  if (devMode) {
+  const debugInfo = keepFullDebugBody ? merged : stripLargeBody(merged)
+  if (keepFullDebugBody) {
     stripDebugInfoFromOtherMessages(msgId)
   }
   setRequestTraceInfo(msgId, {

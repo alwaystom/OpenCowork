@@ -1156,6 +1156,20 @@ async function _runPluginAgent(task: PluginAutoReplyTask): Promise<void> {
           )
           break
 
+        case 'tool_call_update':
+          useAgentStore.getState().updateToolCall(
+            event.toolCall.id,
+            {
+              input: summarizeToolInputForLiveCard(event.toolCall.name, event.toolCall.input),
+              status: event.toolCall.status,
+              output: event.toolCall.output,
+              error: event.toolCall.error,
+              startedAt: event.toolCall.startedAt
+            },
+            sessionId
+          )
+          break
+
         case 'tool_call_result': {
           const settledInput =
             event.toolCall.status === 'completed' || event.toolCall.status === 'error'

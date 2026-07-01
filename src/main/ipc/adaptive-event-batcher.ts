@@ -263,6 +263,7 @@ export class AdaptiveEventBatcher {
         }
         break
       case 'tool_call_start':
+      case 'tool_call_update':
       case 'tool_call_approval_needed':
       case 'tool_call_result':
         if (event.toolCall.id && event.toolCall.name) {
@@ -639,6 +640,11 @@ function mapToStreamEvent(raw: Record<string, unknown>): AgentStreamEvent | null
       if (!tc) return null
       return { type: 'tool_call_start', toolCall: tc }
     }
+    case 'tool_call_update': {
+      const tc = mapToolCallState(raw.toolCall)
+      if (!tc) return null
+      return { type: 'tool_call_update', toolCall: tc }
+    }
     case 'tool_call_approval_needed': {
       const tc = mapToolCallState(raw.toolCall)
       if (!tc) return null
@@ -686,6 +692,9 @@ function mapToStreamEvent(raw: Record<string, unknown>): AgentStreamEvent | null
     case 'context_compression_start':
       return { type: 'context_compression_start' }
     case 'context_compressed': {
+      const compactArtifacts = Array.isArray(raw.compactArtifacts)
+        ? raw.compactArtifacts.map((m) => mapMessage(m)).filter((m): m is MessageWire => m !== null)
+        : undefined
       const messages = Array.isArray(raw.messages)
         ? raw.messages.map((m) => mapMessage(m)).filter((m): m is MessageWire => m !== null)
         : undefined
@@ -699,6 +708,7 @@ function mapToStreamEvent(raw: Record<string, unknown>): AgentStreamEvent | null
         originalCount: num(raw.originalCount),
         newCount: num(raw.newCount ?? raw.compressedCount),
         ...(keptMessageCount !== undefined ? { keptMessageCount } : {}),
+        ...(compactArtifacts && compactArtifacts.length > 0 ? { compactArtifacts } : {}),
         ...(messages && messages.length > 0 ? { messages } : {})
       }
     }

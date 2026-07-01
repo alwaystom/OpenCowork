@@ -1,5 +1,6 @@
 appId: com.opencowork.app
 productName: OpenCoWork
+buildVersion: ${version}
 directories:
   buildResources: build
 afterPack: build/after-sign-mac.cjs
@@ -100,6 +101,8 @@ asarUnpack:
   - node_modules/node-gyp-build/**
 win:
   executableName: OpenCoWork
+  fileVersion: ${version}
+  productVersion: ${version}
   icon: build/icon.ico
   legalTrademarks: OpenCoWork
 nsis:

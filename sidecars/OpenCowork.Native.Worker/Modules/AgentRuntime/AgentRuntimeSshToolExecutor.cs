@@ -78,6 +78,8 @@ internal static class AgentRuntimeSshToolExecutor
     public static async Task<string> ExecuteAsync(
         NativeToolCallView call,
         JsonElement parameters,
+        AgentRuntimeTools.AgentRuntimeRunState state,
+        WorkerRequestContext context,
         CancellationToken cancellationToken)
     {
         var startedAt = Stopwatch.GetTimestamp();
@@ -96,7 +98,12 @@ internal static class AgentRuntimeSshToolExecutor
                 "LS" => await LsAsync(call.Input, parameters),
                 "Glob" => await GlobAsync(call.Input, parameters),
                 "Grep" => await GrepAsync(call.Input, parameters),
-                "Bash" or "Shell" => await ExecuteShellAsync(call.Input, parameters),
+                "Bash" or "Shell" => await ExecuteShellAsync(
+                    call,
+                    parameters,
+                    state,
+                    context,
+                    cancellationToken),
                 _ => EncodeError($"Native SSH tool not registered: {call.Name}")
             };
 
@@ -483,8 +490,14 @@ internal static class AgentRuntimeSshToolExecutor
             GrepPromptMaxChars);
     }
 
-    private static async Task<string> ExecuteShellAsync(JsonElement input, JsonElement parameters)
+    private static async Task<string> ExecuteShellAsync(
+        NativeToolCallView call,
+        JsonElement parameters,
+        AgentRuntimeTools.AgentRuntimeRunState state,
+        WorkerRequestContext context,
+        CancellationToken cancellationToken)
     {
+        var input = call.Input;
         var command = JsonHelpers.GetString(input, "command");
         if (string.IsNullOrWhiteSpace(command))
         {
@@ -504,27 +517,163 @@ internal static class AgentRuntimeSshToolExecutor
         var remoteCommand = string.IsNullOrWhiteSpace(cwd)
             ? command
             : $"cd {SshOpenSsh.ShellPathExpr(cwd)} && {command}";
+        var displayCwd = string.IsNullOrWhiteSpace(cwd) ? "~" : cwd;
+        var liveInput = BuildShellInputElement(input, displayCwd, command);
         var timeoutMs = Math.Clamp(
             JsonHelpers.GetInt(input, "timeout", ShellDefaultTimeoutMs),
             1,
             ShellMaxTimeoutMs);
+        var stdout = new ShellOutputCollector(ShellMaxOutputChars);
+        var stderr = new ShellOutputCollector(ShellMaxOutputChars);
+        var combinedOutput = new ShellOutputCollector(ShellMaxOutputChars);
+        var outputLock = new object();
+        using var emitLock = new SemaphoreSlim(1, 1);
+
+        async Task EmitLiveUpdateAsync()
+        {
+            await emitLock.WaitAsync(CancellationToken.None);
+            try
+            {
+                string stdoutSnapshot;
+                string stderrSnapshot;
+                string combinedSnapshot;
+                lock (outputLock)
+                {
+                    stdoutSnapshot = stdout.ToString();
+                    stderrSnapshot = stderr.ToString();
+                    combinedSnapshot = combinedOutput.ToString();
+                }
+
+                await EmitShellToolUpdateAsync(
+                    call,
+                    liveInput,
+                    stdoutSnapshot,
+                    stderrSnapshot,
+                    combinedSnapshot,
+                    displayCwd,
+                    command,
+                    state,
+                    context);
+            }
+            finally
+            {
+                emitLock.Release();
+            }
+        }
+
+        async ValueTask HandleStdoutChunkAsync(string chunk)
+        {
+            bool changed;
+            lock (outputLock)
+            {
+                changed = stdout.Append(chunk) | combinedOutput.Append(chunk);
+            }
+
+            if (changed)
+            {
+                await EmitLiveUpdateAsync();
+            }
+        }
+
+        async ValueTask HandleStderrChunkAsync(string chunk)
+        {
+            bool changed;
+            lock (outputLock)
+            {
+                changed = stderr.Append(chunk) | combinedOutput.Append(chunk);
+            }
+
+            if (changed)
+            {
+                await EmitLiveUpdateAsync();
+            }
+        }
+
+        await EmitLiveUpdateAsync();
         var result = await SshOpenSsh.ExecuteAsync(
             parameters,
             remoteCommand,
             timeoutMs,
             maxStdoutChars: ShellMaxOutputChars,
-            maxStderrChars: ShellMaxOutputChars);
+            maxStderrChars: ShellMaxOutputChars,
+            stdoutChunkAsync: HandleStdoutChunkAsync,
+            stderrChunkAsync: HandleStderrChunkAsync,
+            cancellationToken: cancellationToken);
+        await EmitLiveUpdateAsync();
 
         return EncodeJsonObject(writer =>
         {
             writer.WriteNumber("exitCode", result.TimedOut ? 124 : result.ExitCode);
             writer.WriteString("stdout", Truncate(result.Stdout, ShellMaxOutputChars));
             writer.WriteString("stderr", Truncate(result.Stderr, ShellMaxOutputChars));
+            writer.WriteString("output", combinedOutput.ToString());
             writer.WriteBoolean("timedOut", result.TimedOut);
-            WriteNullableString(writer, "cwd", string.IsNullOrWhiteSpace(cwd) ? null : cwd);
+            writer.WriteString("cwd", displayCwd);
+            writer.WriteString("command", command);
             writer.WriteNumber("totalMs", result.TotalMs);
             writer.WriteString("executionEngine", "native_aot_openssh");
         });
+    }
+
+    private static async Task EmitShellToolUpdateAsync(
+        NativeToolCallView call,
+        JsonElement input,
+        string stdout,
+        string stderr,
+        string output,
+        string cwd,
+        string command,
+        AgentRuntimeTools.AgentRuntimeRunState state,
+        WorkerRequestContext context)
+    {
+        var content = EncodeJsonObject(writer =>
+        {
+            writer.WriteString("stdout", stdout);
+            writer.WriteString("stderr", stderr);
+            writer.WriteString("output", output);
+            writer.WriteString("cwd", cwd);
+            writer.WriteString("command", command);
+            writer.WriteString("executionEngine", "native_aot_openssh");
+        });
+
+        await AgentRuntimeTools.EmitAsync(
+            state,
+            context,
+            new AgentRuntimeStreamEvent(
+                "tool_call_update",
+                ToolCall: new AgentRuntimeToolCallState(
+                    call.Id,
+                    call.Name,
+                    input,
+                    "running",
+                    CreateStringElement(content))));
+    }
+
+    private static JsonElement BuildShellInputElement(JsonElement input, string cwd, string command)
+    {
+        var json = EncodeJsonObject(writer =>
+        {
+            if (input.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in input.EnumerateObject())
+                {
+                    if (property.NameEquals("cwd"))
+                    {
+                        continue;
+                    }
+                    property.WriteTo(writer);
+                }
+            }
+            else
+            {
+                writer.WriteString("command", command);
+            }
+
+            writer.WriteString("cwd", cwd);
+        });
+
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
 
     private static async Task<string> ReadRemoteTextAsync(JsonElement parameters, string path)
@@ -1398,6 +1547,11 @@ internal static class AgentRuntimeSshToolExecutor
         return EncodeJsonObject(writer => writer.WriteString("error", message));
     }
 
+    private static JsonElement CreateStringElement(string value)
+    {
+        return JsonSerializer.SerializeToElement(value, WorkerJsonContext.Default.String);
+    }
+
     private static int ClampPromptLimit(int? value, int fallback, int max)
     {
         if (value is null or <= 0)
@@ -1437,6 +1591,50 @@ internal static class AgentRuntimeSshToolExecutor
     private static long ElapsedMs(long startedAt)
     {
         return (long)Math.Round(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
+    }
+
+    private sealed class ShellOutputCollector
+    {
+        private readonly int maxChars;
+        private readonly StringBuilder builder = new();
+        private bool truncated;
+
+        public ShellOutputCollector(int maxChars)
+        {
+            this.maxChars = maxChars;
+        }
+
+        public bool Append(string chunk)
+        {
+            if (truncated)
+            {
+                return false;
+            }
+
+            var remaining = maxChars - builder.Length;
+            if (remaining <= 0)
+            {
+                truncated = true;
+                return false;
+            }
+
+            if (chunk.Length <= remaining)
+            {
+                builder.Append(chunk);
+                return true;
+            }
+
+            builder.Append(chunk.AsSpan(0, remaining));
+            builder.AppendLine();
+            builder.Append("[Native SSH shell output truncated]");
+            truncated = true;
+            return true;
+        }
+
+        public override string ToString()
+        {
+            return builder.ToString();
+        }
     }
 
     private sealed record SshLsEntry(string Name, string Type, string Path);

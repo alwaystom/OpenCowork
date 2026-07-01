@@ -173,7 +173,8 @@ const toolMeta: Record<
 }
 
 function formatToolSummary(name: string, input: Record<string, unknown>): string | null {
-  if (name === 'Bash' || name === 'PowerShell') return String(input.command ?? '')
+  if (name === 'Bash' || name === 'Shell' || name === 'PowerShell')
+    return String(input.command ?? '')
   if (name === 'Write') return `Create/overwrite: ${input.file_path ?? input.path ?? ''}`
   if (name === 'Edit') return `Edit: ${input.file_path ?? input.path ?? ''}`
   if (name === 'Read') return `Read: ${input.file_path ?? input.path ?? ''}`
@@ -270,9 +271,17 @@ export function PermissionDialog({
                 </div>
               )}
               {workingFolder &&
-                ['Bash', 'PowerShell', 'Write', 'Edit', 'Delete', 'LS', 'Glob', 'Grep'].includes(
-                  toolCall?.name ?? ''
-                ) && (
+                [
+                  'Bash',
+                  'Shell',
+                  'PowerShell',
+                  'Write',
+                  'Edit',
+                  'Delete',
+                  'LS',
+                  'Glob',
+                  'Grep'
+                ].includes(toolCall?.name ?? '') && (
                   <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
                     <FolderOpen className="size-3 shrink-0" />
                     <span className="truncate">{workingFolder}</span>

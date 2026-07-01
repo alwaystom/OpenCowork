@@ -150,6 +150,7 @@ export type AgentEvent =
       }
     }
   | { type: 'tool_call_start'; toolCall: ToolCallState }
+  | { type: 'tool_call_update'; toolCall: ToolCallState }
   | { type: 'tool_call_approval_needed'; toolCall: ToolCallState }
   | { type: 'tool_call_result'; toolCall: ToolCallState }
   | ({ type: 'request_retry' } & RequestRetryState)
@@ -178,6 +179,7 @@ export type AgentEvent =
       newCount: number
       /** Number of older messages that were summarized (kept visible in UI under the new model). */
       keptMessageCount?: number
+      compactArtifacts?: UnifiedMessage[]
       messages?: UnifiedMessage[]
     }
 

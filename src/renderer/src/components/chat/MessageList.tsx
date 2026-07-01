@@ -2,6 +2,7 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { useShallow } from 'zustand/react/shallow'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   MessageSquare,
   CircleHelp,
@@ -68,6 +69,7 @@ interface MessageListProps {
   onEditUserMessage?: (messageId: string, draft: EditableUserMessageDraft) => void
   onDeleteMessage?: (messageId: string) => void
   exportAll?: boolean
+  fullWidth?: boolean
 }
 
 type RenderableMessage = ChatRenderableMessageMeta
@@ -155,6 +157,7 @@ interface MessageRowProps {
   requestRetryState?: RequestRetryState | null
   renderMode?: 'default' | 'transcript' | 'static'
   showChangeSummary?: boolean
+  fullWidth?: boolean
   onRetry?: () => void
   onContinue?: () => void
   onEditUserMessage?: (messageId: string, draft: EditableUserMessageDraft) => void
@@ -179,10 +182,21 @@ const USER_LOCATOR_SCROLL_OFFSET = 28
 const USER_LOCATOR_HIGHLIGHT_MS = 1400
 const OLDER_MESSAGE_LOAD_SCROLL_THRESHOLD = 72
 const MIN_RENDERABLE_HISTORY_ROWS = 3
+const VIRTUAL_ROW_ESTIMATED_HEIGHT = 180
+const VIRTUAL_ROW_OVERSCAN = 8
 const EMPTY_ORCHESTRATION_STATE = { runs: [], byId: new Map(), byMessageId: new Map() }
 const MESSAGE_COLUMN_CLASS = 'mx-auto w-full max-w-[820px] px-5'
 const MESSAGE_COLUMN_COMPACT_CLASS = 'mx-auto w-full max-w-[720px] px-5'
+const MESSAGE_COLUMN_FULL_WIDTH_CLASS = 'mx-auto w-full max-w-none px-5'
 const EMPTY_USER_LOCATOR_ROWS: UserMessageIndexRow[] = []
+
+function getMessageColumnClass(fullWidth: boolean): string {
+  return fullWidth ? MESSAGE_COLUMN_FULL_WIDTH_CLASS : MESSAGE_COLUMN_CLASS
+}
+
+function getMessageColumnCompactClass(fullWidth: boolean): string {
+  return fullWidth ? MESSAGE_COLUMN_FULL_WIDTH_CLASS : MESSAGE_COLUMN_COMPACT_CLASS
+}
 
 interface MessageListSessionSelection {
   messages: UnifiedMessage[]
@@ -435,6 +449,7 @@ function areMessageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): 
     prev.isLastAssistantMessage === next.isLastAssistantMessage &&
     prev.showContinue === next.showContinue &&
     prev.disableAnimation === next.disableAnimation &&
+    prev.fullWidth === next.fullWidth &&
     (prev.toolResults === next.toolResults ||
       areToolResultsEqual(prev.toolResults, next.toolResults)) &&
     prev.inlineCompactSummaries === next.inlineCompactSummaries &&
@@ -683,6 +698,7 @@ const MessageRow = React.memo(function MessageRow({
   requestRetryState,
   renderMode,
   showChangeSummary = true,
+  fullWidth = false,
   onRetry,
   onContinue,
   onEditUserMessage,
@@ -696,7 +712,7 @@ const MessageRow = React.memo(function MessageRow({
     <div
       data-message-id={message.id}
       data-anchor={isAnchor ? 'true' : undefined}
-      className={`${MESSAGE_COLUMN_CLASS} pb-7 transition-colors duration-500 ${
+      className={`${getMessageColumnClass(fullWidth)} pb-7 transition-colors duration-500 ${
         isHighlighted ? 'rounded-md bg-primary/5 ring-1 ring-primary/20' : ''
       }`}
     >
@@ -873,7 +889,8 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     onContinue,
     onEditUserMessage,
     onDeleteMessage,
-    exportAll = false
+    exportAll = false,
+    fullWidth = false
   } = props
   const { t } = useTranslation('chat')
   const currentActiveSessionId = useChatStore((s) => s.activeSessionId)
@@ -1157,6 +1174,19 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
         data: message
       }))
   }, [inlineCompactSummaryState.summaryIds, renderableMessages])
+  const hasLoadOlderRow = loadedRangeStart > 0
+  const virtualRowCount = rows.length + (hasLoadOlderRow ? 1 : 0)
+  const rowVirtualizer = useVirtualizer({
+    count: virtualRowCount,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => VIRTUAL_ROW_ESTIMATED_HEIGHT,
+    overscan: VIRTUAL_ROW_OVERSCAN,
+    getItemKey: (index) => {
+      if (hasLoadOlderRow && index === 0) return `load-older:${activeSessionId ?? 'none'}`
+      const row = rows[index - (hasLoadOlderRow ? 1 : 0)]
+      return row?.key ?? `row:${index}`
+    }
+  })
   const pendingAskUserQuestion = React.useMemo(
     () => findPendingAskUserQuestion(rows, toolResultsLookup, messageLookup),
     [messageLookup, rows, toolResultsLookup]
@@ -1298,7 +1328,9 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
       if (scrollToTarget()) return
       if (!activeSessionId) return
 
-      await useChatStore.getState().loadSessionMessages(activeSessionId)
+      await useChatStore
+        .getState()
+        .loadMessageWindowAround(activeSessionId, { messageId, sortOrder: item.sortOrder }, 30)
 
       await new Promise<void>((resolve) => {
         window.requestAnimationFrame(() => {
@@ -1306,9 +1338,27 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
         })
       })
 
-      scrollToTarget()
+      if (scrollToTarget()) return
+
+      const chatState = useChatStore.getState()
+      const targetIndex = chatState
+        .getSessionMessages(activeSessionId)
+        .findIndex((message) => message.id === messageId)
+      if (targetIndex >= 0) {
+        const targetSession = chatState.sessions.find((session) => session.id === activeSessionId)
+        rowVirtualizer.scrollToIndex(
+          targetIndex + ((targetSession?.loadedRangeStart ?? 0) > 0 ? 1 : 0),
+          {
+            align: 'center'
+          }
+        )
+        await new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => resolve())
+        })
+        scrollToTarget()
+      }
     },
-    [activeSessionId, markProgrammaticScroll]
+    [activeSessionId, markProgrammaticScroll, rowVirtualizer]
   )
 
   const loadOlderMessages = React.useCallback(async (): Promise<number> => {
@@ -1431,7 +1481,7 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
 
   React.useEffect(() => {
     if (!activeSessionId) return
-    void useChatStore.getState().loadSessionMessages(activeSessionId)
+    void useChatStore.getState().loadRecentSessionMessages(activeSessionId)
   }, [activeSessionId])
 
   React.useEffect(() => {
@@ -1440,7 +1490,7 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     const hasStreamingMessageInView = messages.some((message) => message.id === streamingMessageId)
     if (hasStreamingMessageInView) return
 
-    void useChatStore.getState().loadSessionMessages(activeSessionId, true)
+    void useChatStore.getState().loadRecentSessionMessages(activeSessionId, true)
   }, [activeSessionId, messages, streamingMessageId])
 
   React.useLayoutEffect(() => {
@@ -1547,7 +1597,7 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
         {[0, 1, 2].map((index) => (
           <div
             key={index}
-            className={`${MESSAGE_COLUMN_CLASS} space-y-2 ${
+            className={`${getMessageColumnClass(fullWidth)} space-y-2 ${
               index % 2 === 0 ? 'self-start' : 'self-end'
             }`}
           >
@@ -1570,7 +1620,9 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
         : t(hint.titleKey)
     return (
       <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-        <div className={`flex flex-col items-center gap-3 ${MESSAGE_COLUMN_COMPACT_CLASS}`}>
+        <div
+          className={`flex flex-col items-center gap-3 ${getMessageColumnCompactClass(fullWidth)}`}
+        >
           <div>
             <p className="text-[18px] font-semibold tracking-tight text-foreground/92 sm:text-[19px]">
               {emptyTitle}
@@ -1646,6 +1698,7 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
                 requestRetryState={
                   row.isLastAssistantMessage ? (sessionRequestRetryState ?? null) : null
                 }
+                fullWidth={fullWidth}
                 onRetry={onRetry}
                 onContinue={onContinue}
                 onEditUserMessage={onEditUserMessage}
@@ -1667,68 +1720,102 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
         style={{ overflowAnchor: 'none' }}
         onScroll={handleListScroll}
       >
-        {loadedRangeStart > 0 && (
-          <div className={`${MESSAGE_COLUMN_CLASS} flex justify-center pb-3 pt-3`}>
-            <button
-              type="button"
-              className="rounded-full border border-border/70 bg-background/92 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:text-foreground disabled:cursor-wait disabled:opacity-70"
-              onClick={() => void loadOlderMessages()}
-              disabled={isLoadingOlderMessages}
-            >
-              {isLoadingOlderMessages
-                ? t('messageList.loadingOlder')
-                : t('messageList.loadOlder', { count: loadedRangeStart })}
-            </button>
-          </div>
-        )}
-        {(() => {
-          const liveCutoffIndex = Math.max(0, lastMessageRowIndex - TAIL_LIVE_MESSAGE_COUNT)
-
-          return rows.map((row, rowIndex) => {
-            const disableAnimation =
-              lastMessageRowIndex >= 0
-                ? rowIndex >= Math.max(0, lastMessageRowIndex - (TAIL_STATIC_MESSAGE_COUNT - 1))
-                : false
-
-            const { messageId, isLastUserMessage, isLastAssistantMessage, showContinue } = row.data
-            const message = messageLookup.get(messageId)
-            if (!message) return null
-
-            const isEmptyAssistantLoading =
-              isLastAssistantMessage && isAgentExecutionActive && hasEmptyAssistantContent(message)
-            const isStreaming = streamingMessageId === messageId || isEmptyAssistantLoading
-            const rowRenderMode = !isStreaming && rowIndex < liveCutoffIndex ? 'static' : undefined
+        <div className="relative w-full" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            const isLoadOlderRow = hasLoadOlderRow && virtualRow.index === 0
+            const rowIndex = virtualRow.index - (hasLoadOlderRow ? 1 : 0)
 
             return (
-              <MessageRow
-                key={row.key}
-                message={message}
-                sessionId={targetSessionId}
-                sessionAssistantMessageIds={sessionAssistantMessageIds}
-                sessionToolUseIds={sessionToolUseIds}
-                isStreaming={isStreaming}
-                isLastUserMessage={isLastUserMessage}
-                isLastAssistantMessage={isLastAssistantMessage}
-                showContinue={showContinue}
-                disableAnimation={disableAnimation}
-                toolResults={toolResultsLookup.get(messageId)}
-                inlineCompactSummaries={inlineCompactSummaryState.byAssistantId.get(messageId)}
-                orchestrationRun={orchestrationState.byMessageId.get(messageId)?.primaryRun ?? null}
-                hiddenToolUseIds={orchestrationState.byMessageId.get(messageId)?.hiddenToolUseIds}
-                anchorMessageId={null}
-                highlightMessageId={highlightedMessageId}
-                renderMode={rowRenderMode}
-                requestRetryState={
-                  isLastAssistantMessage ? (sessionRequestRetryState ?? null) : null
-                }
-                onRetry={onRetry}
-                onContinue={onContinue}
-                onEditUserMessage={onEditUserMessage}
-                onDeleteMessage={onDeleteMessage}
-              />
+              <div
+                key={virtualRow.key}
+                ref={rowVirtualizer.measureElement}
+                data-index={virtualRow.index}
+                className="absolute left-0 top-0 w-full"
+                style={{ transform: `translateY(${virtualRow.start}px)` }}
+              >
+                {isLoadOlderRow ? (
+                  <div
+                    className={`${getMessageColumnClass(fullWidth)} flex justify-center pb-3 pt-3`}
+                  >
+                    <button
+                      type="button"
+                      className="rounded-full border border-border/70 bg-background/92 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:text-foreground disabled:cursor-wait disabled:opacity-70"
+                      onClick={() => void loadOlderMessages()}
+                      disabled={isLoadingOlderMessages}
+                    >
+                      {isLoadingOlderMessages
+                        ? t('messageList.loadingOlder')
+                        : t('messageList.loadOlder', { count: loadedRangeStart })}
+                    </button>
+                  </div>
+                ) : (
+                  (() => {
+                    const row = rows[rowIndex]
+                    if (!row) return null
+
+                    const liveCutoffIndex = Math.max(
+                      0,
+                      lastMessageRowIndex - TAIL_LIVE_MESSAGE_COUNT
+                    )
+                    const disableAnimation =
+                      lastMessageRowIndex >= 0
+                        ? rowIndex >=
+                          Math.max(0, lastMessageRowIndex - (TAIL_STATIC_MESSAGE_COUNT - 1))
+                        : false
+
+                    const { messageId, isLastUserMessage, isLastAssistantMessage, showContinue } =
+                      row.data
+                    const message = messageLookup.get(messageId)
+                    if (!message) return null
+
+                    const isEmptyAssistantLoading =
+                      isLastAssistantMessage &&
+                      isAgentExecutionActive &&
+                      hasEmptyAssistantContent(message)
+                    const isStreaming = streamingMessageId === messageId || isEmptyAssistantLoading
+                    const rowRenderMode =
+                      !isStreaming && rowIndex < liveCutoffIndex ? 'static' : undefined
+
+                    return (
+                      <MessageRow
+                        message={message}
+                        sessionId={targetSessionId}
+                        sessionAssistantMessageIds={sessionAssistantMessageIds}
+                        sessionToolUseIds={sessionToolUseIds}
+                        isStreaming={isStreaming}
+                        isLastUserMessage={isLastUserMessage}
+                        isLastAssistantMessage={isLastAssistantMessage}
+                        showContinue={showContinue}
+                        disableAnimation={disableAnimation}
+                        toolResults={toolResultsLookup.get(messageId)}
+                        inlineCompactSummaries={inlineCompactSummaryState.byAssistantId.get(
+                          messageId
+                        )}
+                        orchestrationRun={
+                          orchestrationState.byMessageId.get(messageId)?.primaryRun ?? null
+                        }
+                        hiddenToolUseIds={
+                          orchestrationState.byMessageId.get(messageId)?.hiddenToolUseIds
+                        }
+                        anchorMessageId={null}
+                        highlightMessageId={highlightedMessageId}
+                        renderMode={rowRenderMode}
+                        requestRetryState={
+                          isLastAssistantMessage ? (sessionRequestRetryState ?? null) : null
+                        }
+                        fullWidth={fullWidth}
+                        onRetry={onRetry}
+                        onContinue={onContinue}
+                        onEditUserMessage={onEditUserMessage}
+                        onDeleteMessage={onDeleteMessage}
+                      />
+                    )
+                  })()
+                )}
+              </div>
             )
-          })
-        })()}
+          })}
+        </div>
       </div>
 
       <UserMessageLocator
@@ -1770,7 +1857,8 @@ function areMessageListPropsEqual(prev: MessageListProps, next: MessageListProps
     prev.onContinue === next.onContinue &&
     prev.onEditUserMessage === next.onEditUserMessage &&
     prev.onDeleteMessage === next.onDeleteMessage &&
-    prev.exportAll === next.exportAll
+    prev.exportAll === next.exportAll &&
+    prev.fullWidth === next.fullWidth
   )
 }
 

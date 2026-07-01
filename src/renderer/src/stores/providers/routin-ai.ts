@@ -1291,6 +1291,28 @@ export const routinAiPreset: BuiltinProviderPreset = {
       supportsFunctionCall: false
     },
     {
+      id: 'claude-sonnet-5',
+      name: 'Claude Sonnet 5',
+      icon: 'claude',
+      type: 'anthropic',
+      enabled: true,
+      contextLength: 1_000_000,
+      maxOutputTokens: 128_000,
+      supportsVision: true,
+      supportsFunctionCall: true,
+      inputPrice: 2,
+      outputPrice: 10,
+      cacheCreationPrice: 2.5,
+      cacheHitPrice: 0.2,
+      supportsThinking: true,
+      thinkingConfig: {
+        bodyParams: { thinking: { type: 'adaptive' } },
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high', 'max'],
+        defaultReasoningEffort: 'high'
+      }
+    },
+    {
       id: 'claude-opus-4-6',
       name: 'Claude Opus 4.6',
       icon: 'claude',
@@ -1652,6 +1674,7 @@ const ROUTIN_AI_PLAN_MODEL_ORDER = [
   'gpt-5.4-mini',
   'gpt-5.4',
   'gpt-5.5',
+  'claude-sonnet-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',

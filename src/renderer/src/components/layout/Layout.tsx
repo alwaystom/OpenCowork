@@ -27,7 +27,10 @@ import { useAgentStore } from '@renderer/stores/agent-store'
 import { useSettingsStore } from '@renderer/stores/settings-store'
 import { useChatActions } from '@renderer/hooks/use-chat-actions'
 import { toast } from 'sonner'
-import { sessionToMarkdown } from '@renderer/lib/utils/export-chat'
+import {
+  exportSessionMarkdownFromDb,
+  exportSessionSnapshotFromDb
+} from '@renderer/lib/utils/export-chat'
 import { AnimatePresence } from 'motion/react'
 import { PageTransition, PanelTransition } from '@renderer/components/animate-ui'
 import { openSessionOrFocusDetached } from '@renderer/lib/session-window'
@@ -525,12 +528,9 @@ export function Layout({ updateInfo, onOpenUpdateDialog }: LayoutProps): React.J
       // Ctrl+Shift+C: Copy conversation as markdown
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
         e.preventDefault()
-        if (activeSessionId) {
-          await useChatStore.getState().loadSessionMessages(activeSessionId)
-        }
         const session = useChatStore.getState().sessions.find((s) => s.id === activeSessionId)
         if (session && session.messageCount > 0) {
-          navigator.clipboard.writeText(sessionToMarkdown(session))
+          navigator.clipboard.writeText(await exportSessionMarkdownFromDb(session))
           toast.success(t('layout.conversationCopied'))
         }
         return
@@ -636,8 +636,7 @@ export function Layout({ updateInfo, onOpenUpdateDialog }: LayoutProps): React.J
           toast.error(t('layout.noSessionsToBackup'))
           return
         }
-        await Promise.all(allSessions.map((s) => useChatStore.getState().loadSessionMessages(s.id)))
-        const latestSessions = useChatStore.getState().sessions
+        const latestSessions = await Promise.all(allSessions.map(exportSessionSnapshotFromDb))
         const json = JSON.stringify(latestSessions, null, 2)
         const blob = new Blob([json], { type: 'application/json' })
         const url = URL.createObjectURL(blob)
@@ -652,12 +651,9 @@ export function Layout({ updateInfo, onOpenUpdateDialog }: LayoutProps): React.J
       // Ctrl+Shift+E: Export current conversation
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'E') {
         e.preventDefault()
-        if (activeSessionId) {
-          await useChatStore.getState().loadSessionMessages(activeSessionId)
-        }
         const session = useChatStore.getState().sessions.find((s) => s.id === activeSessionId)
         if (session && session.messageCount > 0) {
-          const md = sessionToMarkdown(session)
+          const md = await exportSessionMarkdownFromDb(session)
           const filename =
             session.title
               .replace(/[^a-zA-Z0-9-_ ]/g, '')

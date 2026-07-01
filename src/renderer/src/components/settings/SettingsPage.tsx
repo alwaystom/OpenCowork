@@ -48,6 +48,7 @@ import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { confirm } from '@renderer/components/ui/confirm-dialog'
 import { LANGUAGE_OPTIONS, resolveIntlLocale } from '@renderer/lib/i18n-language'
+import { exportSessionSnapshotFromDb } from '@renderer/lib/utils/export-chat'
 import { Button } from '@renderer/components/ui/button'
 import { Badge } from '@renderer/components/ui/badge'
 import { Input } from '@renderer/components/ui/input'
@@ -644,8 +645,7 @@ function GeneralPanel(): React.JSX.Element {
       toast.info(t('general.data.noSessions'))
       return
     }
-    await Promise.all(sessions.map((s) => useChatStore.getState().loadSessionMessages(s.id)))
-    const latestSessions = useChatStore.getState().sessions
+    const latestSessions = await Promise.all(sessions.map(exportSessionSnapshotFromDb))
     const json = JSON.stringify(latestSessions, null, 2)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)

@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 internal static class OpenAIChatRuntime
 {
@@ -13,6 +14,7 @@ internal static class OpenAIChatRuntime
     private const double DefaultContextCompressionThreshold = 0.8;
     private const int DefaultContextCompressionReservedOutputTokens = 20_000;
     private const int ContextCompressionAutoBufferTokens = 13_000;
+    private const int ContextSourceHeadMessageLimit = 12;
     private static readonly HttpClient Http = WorkerHttpClientFactory.Create();
     private static readonly JsonWriterOptions WriterOptions = new()
     {
@@ -124,7 +126,7 @@ internal static class OpenAIChatRuntime
                                 OriginalCount: originalCount,
                                 NewCount: compressed.Messages.Length,
                                 KeptMessageCount: summarized,
-                                Messages: compressed.Messages));
+                                CompactArtifacts: ExtractCompactArtifacts(compressed.Messages)));
                         WorkerLog.Info(
                             $"agent context compression ok runId={state.RunId} original={originalCount} " +
                             $"compressed={compressed.Messages.Length} summarized={summarized}");
@@ -255,7 +257,7 @@ internal static class OpenAIChatRuntime
             writer.WriteStartObject();
             foreach (var property in parameters.EnumerateObject())
             {
-                if (property.NameEquals("messages"))
+                if (property.NameEquals("messages") || property.NameEquals("liveOverlayMessages"))
                 {
                     continue;
                 }
@@ -392,6 +394,32 @@ internal static class OpenAIChatRuntime
         return (content.GetString() ?? string.Empty)
             .TrimStart()
             .StartsWith("[Context Memory Compressed Summary", StringComparison.Ordinal);
+    }
+
+    private static JsonElement[] ExtractCompactArtifacts(IReadOnlyList<JsonElement> messages)
+    {
+        var artifacts = new List<JsonElement>(2);
+        var boundary = messages.FirstOrDefault(IsCompactBoundaryMessage);
+        if (boundary.ValueKind != JsonValueKind.Undefined)
+        {
+            artifacts.Add(boundary.Clone());
+        }
+
+        var summary = messages.FirstOrDefault(IsCompactSummaryLikeMessage);
+        if (summary.ValueKind != JsonValueKind.Undefined)
+        {
+            artifacts.Add(summary.Clone());
+        }
+
+        return artifacts.ToArray();
+    }
+
+    private static bool IsCompactBoundaryMessage(JsonElement message)
+    {
+        return message.ValueKind == JsonValueKind.Object &&
+            message.TryGetProperty("meta", out var meta) &&
+            meta.ValueKind == JsonValueKind.Object &&
+            meta.TryGetProperty("compactBoundary", out _);
     }
 
     private static async Task EmitProviderTurnToolCallsAsync(
@@ -1649,9 +1677,22 @@ internal static class OpenAIChatRuntime
 
     private static List<JsonElement> ReadWireConversation(JsonElement parameters)
     {
+        var directMessages = ReadMessageArrayProperty(parameters, "messages");
+        if (directMessages.Count > 0)
+        {
+            return directMessages;
+        }
+
+        var contextMessages = ReadContextSourceMessages(parameters);
+        var overlayMessages = ReadMessageArrayProperty(parameters, "liveOverlayMessages");
+        return MergeOverlayMessages(contextMessages, overlayMessages);
+    }
+
+    private static List<JsonElement> ReadMessageArrayProperty(JsonElement parameters, string propertyName)
+    {
         var result = new List<JsonElement>();
         if (parameters.ValueKind != JsonValueKind.Object ||
-            !parameters.TryGetProperty("messages", out var messages) ||
+            !parameters.TryGetProperty(propertyName, out var messages) ||
             messages.ValueKind != JsonValueKind.Array)
         {
             return result;
@@ -1665,6 +1706,375 @@ internal static class OpenAIChatRuntime
             }
         }
         return result;
+    }
+
+    private static List<JsonElement> ReadContextSourceMessages(JsonElement parameters)
+    {
+        if (parameters.ValueKind != JsonValueKind.Object ||
+            !parameters.TryGetProperty("contextSource", out var contextSource) ||
+            contextSource.ValueKind != JsonValueKind.Object)
+        {
+            return new List<JsonElement>();
+        }
+
+        var sessionId = JsonHelpers.GetString(contextSource, "sessionId")?.Trim();
+        if (string.IsNullOrEmpty(sessionId))
+        {
+            return new List<JsonElement>();
+        }
+
+        var maxMessages = Math.Clamp(JsonHelpers.GetInt(contextSource, "maxMessages", 160), 1, 1000);
+        using var connection = DbConnectionFactory.OpenReadWrite(parameters);
+        using var countCommand = connection.CreateCommand();
+        countCommand.CommandText = "SELECT COUNT(*) FROM messages WHERE session_id = $sessionId";
+        countCommand.Parameters.AddWithValue("$sessionId", sessionId);
+        var count = Convert.ToInt32(countCommand.ExecuteScalar() ?? 0);
+        if (count <= 0)
+        {
+            return new List<JsonElement>();
+        }
+
+        var headLimit = count > maxMessages
+            ? Math.Min(ContextSourceHeadMessageLimit, Math.Max(1, maxMessages / 4))
+            : 0;
+        var tailLimit = Math.Min(Math.Max(1, maxMessages - headLimit), count);
+        var offset = Math.Max(0, count - tailLimit);
+        var rows = new List<ContextSourceMessageRow>();
+
+        if (headLimit > 0)
+        {
+            using var headCommand = connection.CreateCommand();
+            headCommand.CommandText = """
+                SELECT id, role, content, meta, created_at, usage, sort_order
+                  FROM messages
+                 WHERE session_id = $sessionId
+                 ORDER BY sort_order ASC, created_at ASC
+                 LIMIT $limit OFFSET 0
+                """;
+            headCommand.Parameters.AddWithValue("$sessionId", sessionId);
+            headCommand.Parameters.AddWithValue("$limit", headLimit);
+            using var headReader = headCommand.ExecuteReader();
+            while (headReader.Read())
+            {
+                rows.Add(ReadContextSourceMessageRow(headReader));
+            }
+        }
+
+        using (var artifactCommand = connection.CreateCommand())
+        {
+            artifactCommand.CommandText = """
+                SELECT id, role, content, meta, created_at, usage, sort_order
+                  FROM messages
+                 WHERE session_id = $sessionId
+                   AND (
+                     meta LIKE '%compactBoundary%' OR
+                     meta LIKE '%compactSummary%' OR
+                     content LIKE '%[Context Memory Compressed Summary]%'
+                   )
+                 ORDER BY sort_order ASC, created_at ASC
+                """;
+            artifactCommand.Parameters.AddWithValue("$sessionId", sessionId);
+            using var artifactReader = artifactCommand.ExecuteReader();
+            while (artifactReader.Read())
+            {
+                rows.Add(ReadContextSourceMessageRow(artifactReader));
+            }
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, role, content, meta, created_at, usage, sort_order
+              FROM messages
+             WHERE session_id = $sessionId
+             ORDER BY sort_order ASC, created_at ASC
+             LIMIT $limit OFFSET $offset
+            """;
+        command.Parameters.AddWithValue("$sessionId", sessionId);
+        command.Parameters.AddWithValue("$limit", tailLimit);
+        command.Parameters.AddWithValue("$offset", offset);
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(ReadContextSourceMessageRow(reader));
+        }
+
+        var result = new List<JsonElement>();
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in rows.OrderBy(row => row.SortOrder).ThenBy(row => row.CreatedAt))
+        {
+            if (!seenIds.Add(row.Id))
+            {
+                continue;
+            }
+            result.Add(row.Message.Clone());
+        }
+        return ApplyCompactRequestView(result);
+    }
+
+    private static ContextSourceMessageRow ReadContextSourceMessageRow(SqliteDataReader reader)
+    {
+        var id = reader.GetString(0);
+        var createdAt = reader.GetInt64(4);
+        return new ContextSourceMessageRow(
+            id,
+            reader.GetInt32(6),
+            createdAt,
+            BuildWireMessageElement(
+                id,
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                createdAt,
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
+    }
+
+    private static JsonElement BuildWireMessageElement(
+        string id,
+        string role,
+        string content,
+        string? meta,
+        long createdAt,
+        string? usage)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("id", id);
+            writer.WriteString("role", role);
+            writer.WritePropertyName("content");
+            WriteJsonValueOrString(writer, content);
+            writer.WriteNumber("createdAt", createdAt);
+            if (!string.IsNullOrWhiteSpace(usage))
+            {
+                writer.WritePropertyName("usage");
+                WriteJsonValueOrString(writer, usage);
+            }
+            if (!string.IsNullOrWhiteSpace(meta))
+            {
+                writer.WritePropertyName("meta");
+                WriteJsonValueOrString(writer, meta);
+            }
+            writer.WriteEndObject();
+        }
+
+        using var document = JsonDocument.Parse(buffer.WrittenMemory);
+        return document.RootElement.Clone();
+    }
+
+    private static void WriteJsonValueOrString(Utf8JsonWriter writer, string raw)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            document.RootElement.WriteTo(writer);
+        }
+        catch
+        {
+            writer.WriteStringValue(raw);
+        }
+    }
+
+    private static List<JsonElement> MergeOverlayMessages(
+        List<JsonElement> messages,
+        IReadOnlyList<JsonElement> overlayMessages)
+    {
+        if (overlayMessages.Count == 0)
+        {
+            return messages;
+        }
+
+        var result = new List<JsonElement>(messages);
+        var indexById = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var index = 0; index < result.Count; index++)
+        {
+            var id = GetWireMessageId(result[index]);
+            if (!string.IsNullOrEmpty(id))
+            {
+                indexById[id] = index;
+            }
+        }
+
+        foreach (var overlay in overlayMessages)
+        {
+            var id = GetWireMessageId(overlay);
+            if (!string.IsNullOrEmpty(id) && indexById.TryGetValue(id, out var existingIndex))
+            {
+                result[existingIndex] = overlay.Clone();
+                continue;
+            }
+            result.Add(overlay.Clone());
+        }
+
+        return result;
+    }
+
+    private static string? GetWireMessageId(JsonElement message)
+    {
+        return message.ValueKind == JsonValueKind.Object &&
+            message.TryGetProperty("id", out var idElement) &&
+            idElement.ValueKind == JsonValueKind.String
+            ? idElement.GetString()
+            : null;
+    }
+
+    private static List<JsonElement> ApplyCompactRequestView(List<JsonElement> messages)
+    {
+        var boundaryIndex = messages.FindIndex(IsCompactBoundaryMessage);
+        if (boundaryIndex < 0)
+        {
+            return messages
+                .Where(message => !IsCompactArtifactMessage(message))
+                .Select(message => message.Clone())
+                .ToList();
+        }
+
+        var summaryIndex = FindCompactSummaryIndex(messages, boundaryIndex);
+        var boundaryId = GetWireMessageId(messages[boundaryIndex]);
+        var summaryId = summaryIndex >= 0 ? GetWireMessageId(messages[summaryIndex]) : null;
+        var compactMessages = new List<JsonElement>();
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+
+        AppendCompactRequestMessage(compactMessages, seenIds, messages[boundaryIndex], boundaryId, summaryId);
+        if (summaryIndex >= 0)
+        {
+            AppendCompactRequestMessage(compactMessages, seenIds, messages[summaryIndex], boundaryId, summaryId);
+        }
+
+        if (TryGetCompactPreservedSegment(messages[boundaryIndex], out var headId, out var tailId))
+        {
+            var headIndex = messages.FindIndex(message => GetWireMessageId(message) == headId);
+            if (headIndex >= 0)
+            {
+                var tailIndex = -1;
+                for (var index = headIndex; index < messages.Count; index++)
+                {
+                    if (GetWireMessageId(messages[index]) == tailId)
+                    {
+                        tailIndex = index;
+                        break;
+                    }
+                }
+                if (tailIndex >= headIndex)
+                {
+                    for (var index = headIndex; index <= tailIndex; index++)
+                    {
+                        AppendCompactRequestMessage(
+                            compactMessages,
+                            seenIds,
+                            messages[index],
+                            boundaryId,
+                            summaryId);
+                    }
+                }
+            }
+        }
+
+        var trailingStartIndex = summaryIndex >= 0 ? summaryIndex + 1 : boundaryIndex + 1;
+        for (var index = Math.Max(0, trailingStartIndex); index < messages.Count; index++)
+        {
+            AppendCompactRequestMessage(compactMessages, seenIds, messages[index], boundaryId, summaryId);
+        }
+
+        return compactMessages;
+    }
+
+    private static int FindCompactSummaryIndex(IReadOnlyList<JsonElement> messages, int boundaryIndex)
+    {
+        for (var index = boundaryIndex + 1; index < messages.Count; index++)
+        {
+            if (IsCompactBoundaryMessage(messages[index]))
+            {
+                return -1;
+            }
+            if (IsCompactSummaryLikeMessage(messages[index]))
+            {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private static bool IsCompactArtifactMessage(JsonElement message)
+    {
+        return IsCompactBoundaryMessage(message) || IsCompactSummaryLikeMessage(message);
+    }
+
+    private static void AppendCompactRequestMessage(
+        List<JsonElement> result,
+        HashSet<string> seenIds,
+        JsonElement message,
+        string? boundaryId,
+        string? summaryId)
+    {
+        var messageId = GetWireMessageId(message);
+        if (string.IsNullOrEmpty(messageId) || !seenIds.Add(messageId) || IsUiOnlyRequestMessage(message))
+        {
+            return;
+        }
+
+        if (IsCompactArtifactMessage(message) && messageId != boundaryId && messageId != summaryId)
+        {
+            return;
+        }
+
+        result.Add(message.Clone());
+    }
+
+    private static bool IsUiOnlyRequestMessage(JsonElement message)
+    {
+        if (JsonHelpers.GetString(message, "role") != "system")
+        {
+            return false;
+        }
+
+        if (message.TryGetProperty("meta", out var meta) &&
+            meta.ValueKind == JsonValueKind.Object)
+        {
+            if (meta.TryGetProperty("compressionStatus", out _))
+            {
+                return true;
+            }
+            if (meta.TryGetProperty("compactBoundary", out _))
+            {
+                return false;
+            }
+        }
+
+        if (!message.TryGetProperty("content", out var content))
+        {
+            return true;
+        }
+
+        return content.ValueKind switch
+        {
+            JsonValueKind.String => string.IsNullOrWhiteSpace(content.GetString()),
+            JsonValueKind.Array => content.GetArrayLength() == 0,
+            _ => false
+        };
+    }
+
+    private static bool TryGetCompactPreservedSegment(
+        JsonElement boundary,
+        out string headId,
+        out string tailId)
+    {
+        headId = string.Empty;
+        tailId = string.Empty;
+        if (!boundary.TryGetProperty("meta", out var meta) ||
+            meta.ValueKind != JsonValueKind.Object ||
+            !meta.TryGetProperty("compactBoundary", out var compactBoundary) ||
+            compactBoundary.ValueKind != JsonValueKind.Object ||
+            !compactBoundary.TryGetProperty("preservedSegment", out var preservedSegment) ||
+            preservedSegment.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        headId = JsonHelpers.GetString(preservedSegment, "headId")?.Trim() ?? string.Empty;
+        tailId = JsonHelpers.GetString(preservedSegment, "tailId")?.Trim() ?? string.Empty;
+        return headId.Length > 0 && tailId.Length > 0;
     }
 
     private static List<AgentRuntimeChatMessage> ReadConversation(JsonElement parameters)
@@ -2149,5 +2559,11 @@ internal static class OpenAIChatRuntime
         int ContextLength,
         double Threshold,
         int ReservedOutputBudget);
+
+    private sealed record ContextSourceMessageRow(
+        string Id,
+        int SortOrder,
+        long CreatedAt,
+        JsonElement Message);
 
 }

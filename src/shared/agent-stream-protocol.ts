@@ -214,6 +214,7 @@ export type AgentStreamEvent =
   | { type: 'tool_use_generated'; toolUseBlock: ToolUseBlockWire }
   // Tool execution
   | { type: 'tool_call_start'; toolCall: ToolCallStateWire }
+  | { type: 'tool_call_update'; toolCall: ToolCallStateWire }
   | { type: 'tool_call_approval_needed'; toolCall: ToolCallStateWire }
   | { type: 'tool_call_result'; toolCall: ToolCallStateWire }
   // Retry / error
@@ -235,6 +236,7 @@ export type AgentStreamEvent =
       newCount: number
       /** Number of older messages that were summarized (kept visible in UI under the new model). */
       keptMessageCount?: number
+      compactArtifacts?: MessageWire[]
       messages?: MessageWire[]
     }
   // Sub-agent events

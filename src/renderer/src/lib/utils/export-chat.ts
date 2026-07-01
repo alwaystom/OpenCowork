@@ -1,5 +1,6 @@
-import type { ContentBlock } from '../api/types'
+import type { ContentBlock, UnifiedMessage } from '../api/types'
 import type { Session } from '../../stores/chat-store'
+import { invokeMessagePackBinary } from '../ipc/messagepack-ipc-client'
 import {
   formatCacheHitRate,
   getBillableInputTokens,
@@ -9,6 +10,31 @@ import {
 } from '../format-tokens'
 import { parseSystemCommandTag } from '../commands/system-command'
 import { stripSystemReminders } from '../image-attachments'
+import {
+  DB_MESSAGES_COUNT_MSGPACK_CHANNEL,
+  DB_MESSAGES_LIST_PAGE_MSGPACK_CHANNEL
+} from '../../../../shared/messagepack/binary-ipc'
+
+interface MessageRow {
+  id: string
+  session_id: string
+  role: string
+  content: string
+  meta: string | null
+  created_at: number
+  usage: string | null
+  sort_order: number
+}
+
+interface TokenTotals {
+  input: number
+  output: number
+  cacheRead: number
+  cacheCreation: number
+  reasoning: number
+}
+
+const EXPORT_MESSAGE_PAGE_SIZE = 500
 
 function formatTextContent(text: string, removeSystemReminders = false): string {
   const visibleText = removeSystemReminders ? stripSystemReminders(text) : text
@@ -71,12 +97,37 @@ function contentToMarkdown(
     .join('\n\n')
 }
 
-export function sessionToMarkdown(session: Session): string {
-  const lines: string[] = []
+function rowToMessage(row: MessageRow): UnifiedMessage {
+  let content: UnifiedMessage['content']
+  try {
+    const parsed = JSON.parse(row.content)
+    content = typeof parsed === 'string' || Array.isArray(parsed) ? parsed : row.content
+  } catch {
+    content = row.content
+  }
+
+  let meta: UnifiedMessage['meta']
+  try {
+    meta = row.meta ? (JSON.parse(row.meta) as UnifiedMessage['meta']) : undefined
+  } catch {
+    meta = undefined
+  }
+
+  return {
+    id: row.id,
+    role: row.role as UnifiedMessage['role'],
+    content,
+    ...(meta ? { meta } : {}),
+    createdAt: row.created_at,
+    usage: row.usage ? JSON.parse(row.usage) : undefined
+  }
+}
+
+function appendSessionHeader(lines: string[], session: Session, messageCount: number): void {
   lines.push(`# ${session.title}`)
   lines.push('')
   lines.push(`- **Mode**: ${session.mode}`)
-  lines.push(`- **Messages**: ${session.messages.filter((m) => m.role !== 'system').length}`)
+  lines.push(`- **Messages**: ${messageCount}`)
   lines.push(`- **Created**: ${new Date(session.createdAt).toLocaleString()}`)
   lines.push(`- **Updated**: ${new Date(session.updatedAt).toLocaleString()}`)
   if (session.workingFolder) {
@@ -88,52 +139,46 @@ export function sessionToMarkdown(session: Session): string {
   lines.push('')
   lines.push('---')
   lines.push('')
+}
 
-  for (const msg of session.messages) {
-    if (msg.role === 'system') continue
-    const label = msg.role === 'user' ? '## User' : '## Assistant'
-    const time = new Date(msg.createdAt).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit'
-    })
-    lines.push(`${label} <sub>${time}</sub>`)
+function appendMessageMarkdown(lines: string[], msg: UnifiedMessage, totals: TokenTotals): void {
+  if (msg.role === 'system') return
+  const label = msg.role === 'user' ? '## User' : '## Assistant'
+  const time = new Date(msg.createdAt).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+  lines.push(`${label} <sub>${time}</sub>`)
+  lines.push('')
+  lines.push(contentToMarkdown(msg.content, msg.role === 'user'))
+  if (msg.usage) {
     lines.push('')
-    lines.push(contentToMarkdown(msg.content, msg.role === 'user'))
-    if (msg.usage) {
-      lines.push('')
-      const extras: string[] = []
-      const billableInput = getBillableInputTokens(msg.usage)
-      if (msg.usage.cacheReadTokens) {
-        const cacheTokenShare = getCacheHitRate(
-          billableInput,
-          msg.usage.cacheReadTokens,
-          getCacheCreationTokens(msg.usage)
-        )
-        extras.push(`${msg.usage.cacheReadTokens} cached`)
-        extras.push(`${formatCacheHitRate(cacheTokenShare)} cached token share`)
-      }
-      if (msg.usage.reasoningTokens) extras.push(`${msg.usage.reasoningTokens} reasoning`)
-      lines.push(
-        `<sub>Tokens: ${billableInput} in / ${msg.usage.outputTokens} out${extras.length > 0 ? ` / ${extras.join(' / ')}` : ''}</sub>`
+    const extras: string[] = []
+    const billableInput = getBillableInputTokens(msg.usage)
+    if (msg.usage.cacheReadTokens) {
+      const cacheTokenShare = getCacheHitRate(
+        billableInput,
+        msg.usage.cacheReadTokens,
+        getCacheCreationTokens(msg.usage)
       )
+      extras.push(`${msg.usage.cacheReadTokens} cached`)
+      extras.push(`${formatCacheHitRate(cacheTokenShare)} cached token share`)
     }
-    lines.push('')
-  }
+    if (msg.usage.reasoningTokens) extras.push(`${msg.usage.reasoningTokens} reasoning`)
+    lines.push(
+      `<sub>Tokens: ${billableInput} in / ${msg.usage.outputTokens} out${extras.length > 0 ? ` / ${extras.join(' / ')}` : ''}</sub>`
+    )
 
-  // Total token usage summary
-  const totals = session.messages.reduce(
-    (acc, m) => {
-      if (m.usage) {
-        acc.input += getBillableInputTokens(m.usage)
-        acc.output += m.usage.outputTokens
-        if (m.usage.cacheReadTokens) acc.cacheRead += m.usage.cacheReadTokens
-        if (m.usage.cacheCreationTokens) acc.cacheCreation += m.usage.cacheCreationTokens
-        if (m.usage.reasoningTokens) acc.reasoning += m.usage.reasoningTokens
-      }
-      return acc
-    },
-    { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, reasoning: 0 }
-  )
+    totals.input += billableInput
+    totals.output += msg.usage.outputTokens
+    if (msg.usage.cacheReadTokens) totals.cacheRead += msg.usage.cacheReadTokens
+    if (msg.usage.cacheCreationTokens) totals.cacheCreation += msg.usage.cacheCreationTokens
+    if (msg.usage.reasoningTokens) totals.reasoning += msg.usage.reasoningTokens
+  }
+  lines.push('')
+}
+
+function appendTokenTotals(lines: string[], totals: TokenTotals): void {
   if (totals.input + totals.output > 0) {
     lines.push('---')
     lines.push('')
@@ -150,6 +195,77 @@ export function sessionToMarkdown(session: Session): string {
     )
     lines.push('')
   }
+}
+
+export function sessionToMarkdown(session: Session): string {
+  const lines: string[] = []
+  const totals: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, reasoning: 0 }
+  const visibleMessageCount = session.messages.filter((message) => message.role !== 'system').length
+
+  appendSessionHeader(lines, session, visibleMessageCount)
+  for (const msg of session.messages) {
+    appendMessageMarkdown(lines, msg, totals)
+  }
+  appendTokenTotals(lines, totals)
 
   return lines.join('\n')
+}
+
+export async function exportSessionMarkdownFromDb(session: Session): Promise<string> {
+  const lines: string[] = []
+  const totals: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, reasoning: 0 }
+  const totalMessages =
+    session.messageCount ??
+    (await invokeMessagePackBinary<number>(DB_MESSAGES_COUNT_MSGPACK_CHANNEL, session.id))
+
+  appendSessionHeader(lines, session, totalMessages)
+
+  for (let offset = 0; offset < totalMessages; offset += EXPORT_MESSAGE_PAGE_SIZE) {
+    const rows = await invokeMessagePackBinary<MessageRow[]>(
+      DB_MESSAGES_LIST_PAGE_MSGPACK_CHANNEL,
+      {
+        sessionId: session.id,
+        limit: EXPORT_MESSAGE_PAGE_SIZE,
+        offset
+      }
+    )
+    if (rows.length === 0) break
+    for (const row of rows) {
+      appendMessageMarkdown(lines, rowToMessage(row), totals)
+    }
+  }
+
+  appendTokenTotals(lines, totals)
+  return lines.join('\n')
+}
+
+export async function exportSessionSnapshotFromDb(session: Session): Promise<Session> {
+  const totalMessages =
+    session.messageCount ??
+    (await invokeMessagePackBinary<number>(DB_MESSAGES_COUNT_MSGPACK_CHANNEL, session.id))
+  const messages: UnifiedMessage[] = []
+
+  for (let offset = 0; offset < totalMessages; offset += EXPORT_MESSAGE_PAGE_SIZE) {
+    const rows = await invokeMessagePackBinary<MessageRow[]>(
+      DB_MESSAGES_LIST_PAGE_MSGPACK_CHANNEL,
+      {
+        sessionId: session.id,
+        limit: EXPORT_MESSAGE_PAGE_SIZE,
+        offset
+      }
+    )
+    if (rows.length === 0) break
+    messages.push(...rows.map(rowToMessage))
+  }
+
+  return {
+    ...session,
+    messages,
+    messageCount: totalMessages,
+    messagesLoaded: true,
+    loadedRangeStart: 0,
+    loadedRangeEnd: totalMessages,
+    lastKnownMessageCount: totalMessages,
+    promptSnapshot: undefined
+  }
 }

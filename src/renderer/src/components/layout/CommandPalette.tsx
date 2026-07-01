@@ -35,7 +35,7 @@ import { useSettingsStore } from '@renderer/stores/settings-store'
 import { abortSession, clearPendingSessionMessages } from '@renderer/hooks/use-chat-actions'
 import { useTheme } from 'next-themes'
 import type { ProviderType } from '@renderer/lib/api/types'
-import { sessionToMarkdown } from '@renderer/lib/utils/export-chat'
+import { exportSessionMarkdownFromDb } from '@renderer/lib/utils/export-chat'
 import { openSessionOrFocusDetached } from '@renderer/lib/session-window'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
@@ -286,15 +286,12 @@ export function CommandPalette(): React.JSX.Element {
                 onSelect={() =>
                   runAndClose(() => {
                     if (!activeSessionId) return
-                    useChatStore
+                    const latest = useChatStore
                       .getState()
-                      .loadSessionMessages(activeSessionId)
-                      .then(() => {
-                        const latest = useChatStore
-                          .getState()
-                          .sessions.find((s) => s.id === activeSessionId)
-                        if (!latest) return
-                        const md = sessionToMarkdown(latest)
+                      .sessions.find((s) => s.id === activeSessionId)
+                    if (!latest) return
+                    exportSessionMarkdownFromDb(latest)
+                      .then((md) => {
                         navigator.clipboard.writeText(md)
                         toast.success(t('commandPalette.copiedConversation'))
                       })

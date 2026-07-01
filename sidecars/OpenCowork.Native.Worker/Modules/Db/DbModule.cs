@@ -110,9 +110,12 @@ internal sealed class DbModule : IWorkerModule
         context.Register("db/messages-list", DbMessageTools.List);
         context.Register("db/messages-list-user", DbMessageTools.ListUser);
         context.Register("db/messages-list-page", DbMessageTools.ListPage);
+        context.Register("db/messages-request-context", DbMessageTools.RequestContext);
+        context.Register("db/messages-window-around", DbMessageTools.WindowAround);
         context.Register("db/messages-search-content", DbMessageTools.SearchContent);
         context.Register("db/messages-add", DbMessageTools.Add);
         context.Register("db/messages-add-batch", DbMessageTools.AddBatch);
+        context.Register("db/messages-insert-artifacts", DbMessageTools.InsertArtifacts);
         context.Register("db/messages-upsert", DbMessageTools.Upsert);
         context.Register("db/messages-update", DbMessageTools.Update);
         context.Register("db/messages-clear", DbMessageTools.Clear);

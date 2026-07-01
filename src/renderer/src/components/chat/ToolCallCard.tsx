@@ -34,7 +34,6 @@ import {
   Bot,
   FileText
 } from 'lucide-react'
-import { AnimatePresence, motion } from 'motion/react'
 import { toast } from 'sonner'
 import { cn } from '@renderer/lib/utils'
 import type { ToolCallStatus } from '@renderer/lib/agent/types'
@@ -59,10 +58,6 @@ import {
   type CompactToolHeaderModel
 } from './CompactToolCallHeader'
 import { parseExtensionToolResult } from '@renderer/lib/extensions/extension-result'
-
-const LocalTerminal = React.lazy(() =>
-  import('@renderer/components/terminal/LocalTerminal').then((m) => ({ default: m.LocalTerminal }))
-)
 
 interface ToolCallCardProps {
   toolUseId?: string
@@ -801,12 +796,23 @@ interface ShellOutputSummary {
   aborted?: boolean
 }
 
-type LiveShellStream = 'stdout' | 'stderr'
-
 interface LiveShellOutputState {
   execId: string | null
-  stdout: string
-  stderr: string
+  text: string
+}
+
+interface ParsedShellResult {
+  stdout?: string
+  stderr?: string
+  output?: string
+  exitCode?: number
+  processId?: string
+  terminalId?: string
+  summary?: ShellOutputSummary
+  cwd?: string
+  command?: string
+  timedOut?: boolean
+  totalMs?: number
 }
 
 const LIVE_SHELL_OUTPUT_MAX_CHARS = 12_000
@@ -824,7 +830,6 @@ function clampLiveShellText(text: string): string {
 function appendLiveShellOutput(
   state: LiveShellOutputState,
   execId: string,
-  stream: LiveShellStream,
   chunk: string
 ): LiveShellOutputState {
   const base =
@@ -832,86 +837,106 @@ function appendLiveShellOutput(
       ? state
       : {
           execId,
-          stdout: '',
-          stderr: ''
+          text: ''
         }
   const text = normalizeLiveShellChunk(chunk)
   if (!text) return base
-  if (stream === 'stderr') {
-    return {
-      ...base,
-      stderr: clampLiveShellText(`${base.stderr}${text}`)
-    }
-  }
   return {
     ...base,
-    stdout: clampLiveShellText(`${base.stdout}${text}`)
+    text: clampLiveShellText(`${base.text}${text}`)
   }
 }
 
-function ShellTextPane({
-  title,
-  text,
-  expanded,
-  tone = 'default'
-}: {
-  title: string
-  text: string
-  expanded: boolean
-  tone?: 'default' | 'error'
-}): React.JSX.Element | null {
-  const { t } = useTranslation('chat')
-  if (!text) return null
-  const isLong = text.length > 1000
-  const displayed = isLong && !expanded ? `...\n${text.slice(-1000)}` : text
+function getShellInputCommand(input: Record<string, unknown>, fallback?: string): string {
+  if (typeof fallback === 'string' && fallback.trim()) return fallback
   return (
-    <section
-      className={cn(
-        'overflow-hidden rounded-lg border',
-        tone === 'error'
-          ? 'border-destructive/20 bg-destructive/[0.035]'
-          : 'border-border/70 bg-zinc-50/80 dark:bg-background/70'
-      )}
-    >
-      <div
-        className={cn(
-          'flex items-center justify-between gap-2 border-b px-3 py-1.5',
-          tone === 'error'
-            ? 'border-destructive/15 bg-destructive/[0.04]'
-            : 'border-border/60 bg-zinc-100/70 dark:bg-muted/30'
-        )}
-      >
-        <span
-          className={cn(
-            'text-[10px] font-medium uppercase tracking-[0.12em]',
-            tone === 'error' ? 'text-destructive/80' : 'text-muted-foreground/80'
-          )}
-        >
-          {title}
-        </span>
-        <span className="text-[10px] tabular-nums text-muted-foreground/60">
-          {t('toolCall.lineCount', { count: lineCount(text) })}
-        </span>
-      </div>
-      <pre
-        className={cn(
-          'max-h-56 overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 text-[11px] leading-5 antialiased',
-          tone === 'error' ? 'text-destructive/90' : 'text-foreground/88'
-        )}
-        style={{ fontFamily: MONO_FONT }}
-      >
-        {displayed}
-      </pre>
-    </section>
+    getStringInput(input, ['command', 'command_preview']) ||
+    (typeof fallback === 'string' ? fallback : '')
   )
 }
 
+function getShellCwd(input: Record<string, unknown>, fallback?: string): string {
+  if (typeof fallback === 'string' && fallback.trim()) return fallback.trim()
+  return (
+    getStringInput(input, ['cwd', 'workingDirectory', 'working_dir', 'workingFolder']) ||
+    (typeof fallback === 'string' && fallback.trim() ? fallback.trim() : '~')
+  )
+}
+
+function buildShellPromptLine(toolName: string, cwd: string, command: string): string {
+  const normalizedCommand = normalizeLiveShellChunk(command).trimEnd()
+  const isPowerShell = toolName === 'PowerShell'
+  const prefix = isPowerShell ? `PS ${cwd}>` : `${cwd} $`
+  if (!normalizedCommand) return prefix
+
+  const lines = normalizedCommand.split('\n')
+  const continuation = isPowerShell ? '>>' : '>'
+  return [`${prefix} ${lines[0]}`, ...lines.slice(1).map((line) => `${continuation} ${line}`)].join(
+    '\n'
+  )
+}
+
+function getStringField(value: Record<string, unknown>, key: string): string | undefined {
+  const field = value[key]
+  return typeof field === 'string' ? field : undefined
+}
+
+function getNumberField(value: Record<string, unknown>, key: string): number | undefined {
+  const field = value[key]
+  return typeof field === 'number' ? field : undefined
+}
+
+function normalizeShellResult(value: unknown): ParsedShellResult | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const source =
+    record.result && typeof record.result === 'object' && !Array.isArray(record.result)
+      ? (record.result as Record<string, unknown>)
+      : record
+  if (
+    !('stdout' in source) &&
+    !('stderr' in source) &&
+    !('output' in source) &&
+    !('exitCode' in source) &&
+    !('processId' in source)
+  ) {
+    return null
+  }
+
+  return {
+    stdout: getStringField(source, 'stdout'),
+    stderr: getStringField(source, 'stderr'),
+    output: getStringField(source, 'output'),
+    exitCode: getNumberField(source, 'exitCode'),
+    processId: getStringField(source, 'processId'),
+    terminalId: getStringField(source, 'terminalId'),
+    summary:
+      source.summary && typeof source.summary === 'object' && !Array.isArray(source.summary)
+        ? (source.summary as ShellOutputSummary)
+        : undefined,
+    cwd: getStringField(source, 'cwd'),
+    command: getStringField(source, 'command'),
+    timedOut: typeof source.timedOut === 'boolean' ? source.timedOut : undefined,
+    totalMs: getNumberField(source, 'totalMs')
+  }
+}
+
+function buildStoredShellOutput(parsed: ParsedShellResult | null): string {
+  if (!parsed) return ''
+  if (parsed.output) return parsed.output
+  return [parsed.stderr, parsed.stdout ?? parsed.output]
+    .filter((item): item is string => typeof item === 'string' && item.length > 0)
+    .join('\n')
+}
+
 function BashOutputBlock({
+  name,
   output,
   input,
   toolUseId,
   status
 }: {
+  name: string
   output: string
   input: Record<string, unknown>
   toolUseId?: string
@@ -925,147 +950,102 @@ function BashOutputBlock({
   const foregroundExec = useAgentStore((s) =>
     toolUseId ? s.foregroundShellExecByToolUseId[toolUseId] : undefined
   )
-  const foregroundExecId = foregroundExec?.execId
+  const foregroundExecId =
+    foregroundExec?.execId ??
+    ((status === 'running' || status === 'streaming') && toolUseId ? toolUseId : undefined)
   const [liveShellOutput, setLiveShellOutput] = React.useState<LiveShellOutputState>({
     execId: null,
-    stdout: '',
-    stderr: ''
+    text: ''
   })
+  const terminalRef = React.useRef<HTMLPreElement>(null)
 
   React.useEffect(() => {
-    if (!foregroundExecId || status !== 'running') {
+    if (!foregroundExecId || (status !== 'running' && status !== 'streaming')) {
       setLiveShellOutput((current) =>
-        current.execId === null ? current : { execId: null, stdout: '', stderr: '' }
+        current.execId === null ? current : { execId: null, text: '' }
       )
       return
     }
 
-    setLiveShellOutput({ execId: foregroundExecId, stdout: '', stderr: '' })
+    setLiveShellOutput({ execId: foregroundExecId, text: '' })
     return ipcClient.on(IPC.SHELL_OUTPUT, (payload) => {
       const data = payload as { execId?: unknown; chunk?: unknown; stream?: unknown }
       const chunk = data.chunk
       if (data.execId !== foregroundExecId || typeof chunk !== 'string') return
-      setLiveShellOutput((current) =>
-        appendLiveShellOutput(
-          current,
-          foregroundExecId,
-          data.stream === 'stderr' ? 'stderr' : 'stdout',
-          chunk
-        )
-      )
+      setLiveShellOutput((current) => appendLiveShellOutput(current, foregroundExecId, chunk))
     })
   }, [foregroundExecId, status])
 
   const parsed = React.useMemo(() => {
     const obj = decodeStructuredToolResult(output)
-    if (
-      obj &&
-      !Array.isArray(obj) &&
-      ('stdout' in obj || 'output' in obj || 'exitCode' in obj || 'processId' in obj)
-    ) {
-      return obj as {
-        stdout?: string
-        stderr?: string
-        exitCode?: number
-        output?: string
-        processId?: string
-        terminalId?: string
-        summary?: ShellOutputSummary
-      }
-    }
-    return null
+    return normalizeShellResult(obj)
   }, [output])
 
   const processId = parsed?.processId ? String(parsed.processId) : null
   const process = useAgentStore((s) => (processId ? s.backgroundProcesses[processId] : undefined))
   const inputTerminalId = React.useMemo(() => getBashInputTerminalId(input), [input])
-  const terminalId =
-    process?.terminalId ??
-    parsed?.terminalId ??
-    foregroundExec?.terminalId ??
-    inputTerminalId ??
-    null
   const isProcessRunning = process?.status === 'running'
   const exitCode = process?.exitCode ?? parsed?.exitCode
   const statusText = process ? t(`toolCall.processStatus.${process.status}`) : null
   const canStopForegroundExec =
     !process && status === 'running' && !!toolUseId && !!foregroundExecId
 
-  const liveStdoutText = liveShellOutput.execId === foregroundExecId ? liveShellOutput.stdout : ''
-  const liveStderrText = liveShellOutput.execId === foregroundExecId ? liveShellOutput.stderr : ''
-  const storedStdoutText = parsed?.stdout ?? parsed?.output ?? ''
-  const storedStderrText = parsed?.stderr ?? ''
-  const stdoutText = process
+  const liveText = liveShellOutput.execId === foregroundExecId ? liveShellOutput.text : ''
+  const storedText = parsed ? buildStoredShellOutput(parsed) : normalizeLiveShellChunk(output)
+  const rawText = process
     ? process.output
-    : liveStdoutText.length > storedStdoutText.length
-      ? liveStdoutText
-      : storedStdoutText
-  const stderrText = process
-    ? ''
-    : liveStderrText.length > storedStderrText.length
-      ? liveStderrText
-      : storedStderrText
-  const text = process ? process.output : [stderrText, stdoutText].filter(Boolean).join('\n\n')
-  const lineCount = text ? text.split('\n').length : 0
+    : liveText.length > storedText.length
+      ? liveText
+      : storedText
+  const command = getShellInputCommand(input, foregroundExec?.command ?? parsed?.command)
+  const cwd = getShellCwd(input, foregroundExec?.cwd ?? parsed?.cwd)
+  const promptLine = buildShellPromptLine(name, cwd, command)
+  const text = rawText ? `${promptLine}\n${rawText.replace(/^\n+/, '')}` : promptLine
+  const lineCount = text.split('\n').length
   const tokenCount = React.useMemo(() => estimateTokens(text), [text])
-  const showTerminal = Boolean(terminalId)
+
+  React.useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const el = terminalRef.current
+      if (!el) return
+      el.scrollTop = el.scrollHeight
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [text])
 
   return (
     <div className="space-y-2">
-      <div className="activity-card-shell overflow-hidden rounded-xl border border-border/60 bg-zinc-50/80 shadow-none dark:bg-background/60">
-        <div className="activity-card-header flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
+      <div className="overflow-hidden rounded-xl border border-zinc-800 bg-[#0b0d10] shadow-none">
+        <div className="flex items-center justify-between gap-2 border-b border-white/[0.08] bg-[#111418] px-3 py-2">
           <div className="flex items-center gap-2">
-            <span className="text-[12px] font-medium text-foreground">{t('toolCall.shell')}</span>
+            <span className="text-[12px] font-medium text-zinc-200">{t('toolCall.shell')}</span>
             {processId ? (
-              <span className="rounded-md border border-border/60 bg-muted/60 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+              <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-zinc-500">
                 {processId}
+              </span>
+            ) : null}
+            {inputTerminalId ? (
+              <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-zinc-500">
+                {inputTerminalId}
               </span>
             ) : null}
           </div>
           <div className="flex items-center gap-1.5">
-            {!showTerminal ? <CopyBtn text={text} /> : null}
+            <CopyBtn text={text} />
           </div>
         </div>
 
-        {showTerminal ? (
-          <div className="border-b border-border/60 bg-black/90">
-            <div className="h-[320px] min-h-[220px] w-full">
-              <React.Suspense fallback={null}>
-                <LocalTerminal terminalId={terminalId ?? ''} readOnly={!isProcessRunning} />
-              </React.Suspense>
-            </div>
-          </div>
-        ) : (
-          <div
-            className="activity-card-divider border-b border-border/60 px-3 py-2.5 text-[11px]"
-            style={{ fontFamily: MONO_FONT }}
-          >
-            {text ? (
-              stderrText ? (
-                <div className="space-y-3">
-                  <ShellTextPane title="stderr" text={stderrText} expanded tone="error" />
-                  <ShellTextPane
-                    title={stderrText ? 'stdout' : 'output'}
-                    text={stdoutText}
-                    expanded
-                  />
-                </div>
-              ) : (
-                <pre className="whitespace-pre-wrap break-words leading-5 text-foreground/88">
-                  {text}
-                </pre>
-              )
-            ) : (
-              <pre className="whitespace-pre-wrap break-words text-muted-foreground">
-                {t('toolCall.noOutputYet')}
-              </pre>
-            )}
-          </div>
-        )}
+        <pre
+          ref={terminalRef}
+          className="max-h-[360px] min-h-[220px] overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 text-[11px] leading-5 text-zinc-100"
+          style={{ fontFamily: MONO_FONT }}
+        >
+          {text}
+        </pre>
 
         {(statusText || exitCode !== undefined || lineCount > 0) && (
-          <div className="activity-card-divider flex items-center justify-between gap-2 px-3 py-2">
-            <span className="text-[10px] text-muted-foreground">
+          <div className="flex items-center justify-between gap-2 border-t border-white/[0.08] bg-[#111418] px-3 py-2">
+            <span className="text-[10px] text-zinc-500">
               {t('toolCall.lineCount', { count: lineCount })} ·{' '}
               {t('toolCall.tokenCount', { value: formatTokens(tokenCount) })}
             </span>
@@ -1075,10 +1055,10 @@ function BashOutputBlock({
                   className={cn(
                     'rounded-full px-2 py-0.5',
                     process?.status === 'running'
-                      ? 'bg-blue-500/12 text-blue-600 dark:text-blue-300'
+                      ? 'bg-blue-500/12 text-blue-300'
                       : process?.status === 'error'
                         ? 'bg-destructive/10 text-destructive'
-                        : 'bg-muted text-muted-foreground'
+                        : 'bg-white/[0.06] text-zinc-400'
                   )}
                 >
                   {statusText}
@@ -1086,7 +1066,7 @@ function BashOutputBlock({
               ) : null}
               {exitCode !== undefined ? (
                 exitCode === 0 ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/12 px-2 py-0.5 text-emerald-600 dark:text-emerald-300">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/12 px-2 py-0.5 text-emerald-300">
                     <Check className="size-3" />
                     {t('toolCall.success')}
                   </span>
@@ -2658,7 +2638,7 @@ export function ToolStatusDot({
   }
 }
 
-const COMMAND_TOOL_NAMES = new Set(['Bash', 'PowerShell'])
+const COMMAND_TOOL_NAMES = new Set(['Bash', 'Shell', 'PowerShell'])
 const COMPACT_BUILTIN_TOOL_NAMES = new Set([
   'AskUserQuestion',
   'Bash',
@@ -2691,6 +2671,7 @@ const COMPACT_BUILTIN_TOOL_NAMES = new Set([
   'PowerShell',
   'Read',
   'SavePlan',
+  'Shell',
   'Skill',
   'TaskCreate',
   'TaskGet',
@@ -3148,6 +3129,8 @@ function ToolCallCardInner({
   const { t } = useTranslation('chat')
   const isProcessing = status === 'streaming' || status === 'running'
   const isActive = isProcessing || status === 'pending_approval'
+  const isCommandTool = COMMAND_TOOL_NAMES.has(name)
+  const isLiveCommandTool = isCommandTool && isProcessing
   const toolNamePulseClass =
     status === 'running'
       ? 'tool-name-live-pulse tool-name-live-pulse--running'
@@ -3160,16 +3143,31 @@ function ToolCallCardInner({
   // Text Read output can be large; only mount it after the user opens the Read card.
   const [readTextOutputRevealed, setReadTextOutputRevealed] = React.useState(false)
   const prevIsActiveRef = React.useRef(isActive)
+  const wasLiveCommandToolRef = React.useRef(isLiveCommandTool)
   const toggleOpen = React.useCallback(() => {
+    if (isLiveCommandTool) return
     if (name === 'Read' && !open) {
       setReadTextOutputRevealed(true)
     }
     setOpen((current) => !current)
-  }, [name, open])
+  }, [isLiveCommandTool, name, open])
 
   React.useEffect(() => {
     if (hasVisualOutput) {
       setOpen(true)
+      prevIsActiveRef.current = isActive
+      wasLiveCommandToolRef.current = isLiveCommandTool
+      return
+    }
+    if (isLiveCommandTool) {
+      setOpen(true)
+      prevIsActiveRef.current = isActive
+      wasLiveCommandToolRef.current = true
+      return
+    }
+    if (wasLiveCommandToolRef.current) {
+      setOpen(false)
+      wasLiveCommandToolRef.current = false
       prevIsActiveRef.current = isActive
       return
     }
@@ -3178,15 +3176,20 @@ function ToolCallCardInner({
         setOpen(false)
       }
       prevIsActiveRef.current = isActive
+      wasLiveCommandToolRef.current = isLiveCommandTool
       return
     }
     if (prevIsActiveRef.current && !isActive) {
       setOpen(false)
     }
     prevIsActiveRef.current = isActive
-  }, [hasVisualOutput, isActive, isReadTextTool, readTextOutputRevealed])
+    wasLiveCommandToolRef.current = isLiveCommandTool
+  }, [hasVisualOutput, isActive, isLiveCommandTool, isReadTextTool, readTextOutputRevealed])
   const outputText = React.useMemo(() => outputAsString(output), [output])
-  const extensionToolResult = React.useMemo(() => parseExtensionToolResult(output), [output])
+  const extensionToolResult = React.useMemo(
+    () => (open ? parseExtensionToolResult(output) : null),
+    [open, output]
+  )
   const summary = React.useMemo(
     () => inputSummary(name, input, outputText),
     [input, name, outputText]
@@ -3210,7 +3213,7 @@ function ToolCallCardInner({
   }, [name, outputText, summary, t])
   const outputIsErrorOnly = React.useMemo(() => isErrorOnlyOutput(outputText), [outputText])
   const outputError = React.useMemo(() => deriveOutputError(outputText), [outputText])
-  const suppressErrorPanel = name === 'Bash' && isStructuredBashResult(outputText)
+  const suppressErrorPanel = isCommandTool && isStructuredBashResult(outputText)
   const displayError = suppressErrorPanel
     ? null
     : error || (status === 'error' ? outputError : null)
@@ -3247,8 +3250,14 @@ function ToolCallCardInner({
   const compactHeaderError = Boolean(displayError) || (status === 'error' && !!outputError)
   const bashHasFocusedOutput =
     shouldRenderOutputPanels &&
-    name === 'Bash' &&
-    Boolean(status === 'running' || outputText || getBashInputTerminalId(input))
+    isCommandTool &&
+    Boolean(
+      status === 'running' ||
+      status === 'streaming' ||
+      outputText ||
+      getBashInputTerminalId(input) ||
+      getShellInputCommand(input)
+    )
   const hasFocusedOutput =
     shouldRenderOutputPanels &&
     (hasFocusedExpandedOutput(name, output, outputText) || bashHasFocusedOutput)
@@ -3258,7 +3267,13 @@ function ToolCallCardInner({
     !suppressSkillOutput &&
     shouldRenderOutputPanels &&
     (Boolean(output) ||
-      (name === 'Bash' && (status === 'running' || Boolean(getBashInputTerminalId(input)))))
+      (isCommandTool &&
+        Boolean(
+          status === 'running' ||
+          status === 'streaming' ||
+          getBashInputTerminalId(input) ||
+          getShellInputCommand(input)
+        )))
 
   return (
     <div
@@ -3343,218 +3358,211 @@ function ToolCallCardInner({
       </button>
 
       {/* Expanded details */}
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
+      {open && (
+        <div
+          className={cn(
+            'min-w-0 overflow-hidden',
+            useCompactToolHeader
+              ? 'ml-3 mt-1.5 border-l border-border/45 pl-5 dark:border-white/[0.08]'
+              : 'mt-1.5 pl-5'
+          )}
+        >
+          <div
             className={cn(
-              'min-w-0 overflow-hidden',
-              useCompactToolHeader
-                ? 'ml-3 mt-1.5 border-l border-border/45 pl-5 dark:border-white/[0.08]'
-                : 'mt-1.5 pl-5'
+              'space-y-2 pb-0.5',
+              useCompactToolHeader &&
+                'rounded-lg border border-border/55 bg-background/55 px-3 py-3 dark:border-white/[0.08] dark:bg-[#0d0d0e]'
             )}
           >
-            <div
-              className={cn(
-                'space-y-2 pb-0.5',
-                useCompactToolHeader &&
-                  'rounded-lg border border-border/55 bg-background/55 px-3 py-3 dark:border-white/[0.08] dark:bg-[#0d0d0e]'
-              )}
-            >
-              {hideLivePayload ? (
-                <div className="space-y-2">
-                  <StructuredInput name={name} input={input} status={status} />
-                  <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground/70">
-                    {t('toolCall.hiddenLivePayload')}
-                  </div>
+            {hideLivePayload ? (
+              <div className="space-y-2">
+                <StructuredInput name={name} input={input} status={status} />
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground/70">
+                  {t('toolCall.hiddenLivePayload')}
                 </div>
-              ) : (
-                <>
-                  {/* Write: show content with syntax highlighting */}
-                  {showSettledWriteContent &&
-                    name === 'Write' &&
-                    (() => {
-                      const writeContent = typeof input.content === 'string' ? input.content : null
-                      const writePreview =
-                        typeof input.content_preview === 'string' ? input.content_preview : null
-                      const writePreviewTail =
-                        typeof input.content_preview_tail === 'string'
-                          ? input.content_preview_tail
+              </div>
+            ) : (
+              <>
+                {/* Write: show content with syntax highlighting */}
+                {showSettledWriteContent &&
+                  name === 'Write' &&
+                  (() => {
+                    const writeContent = typeof input.content === 'string' ? input.content : null
+                    const writePreview =
+                      typeof input.content_preview === 'string' ? input.content_preview : null
+                    const writePreviewTail =
+                      typeof input.content_preview_tail === 'string'
+                        ? input.content_preview_tail
+                        : null
+                    const displayContent =
+                      writeContent ??
+                      (writePreviewTail
+                        ? `${writePreview}\n…\n${writePreviewTail}`
+                        : writePreview) ??
+                      ''
+                    const isOmitted = !writeContent && !!input.content_omitted
+                    const totalLines =
+                      typeof input.content_lines === 'number'
+                        ? input.content_lines
+                        : writeContent
+                          ? writeContent.split('\n').length
                           : null
-                      const displayContent =
-                        writeContent ??
-                        (writePreviewTail
-                          ? `${writePreview}\n…\n${writePreviewTail}`
-                          : writePreview) ??
-                        ''
-                      const isOmitted = !writeContent && !!input.content_omitted
-                      const totalLines =
-                        typeof input.content_lines === 'number'
-                          ? input.content_lines
-                          : writeContent
-                            ? writeContent.split('\n').length
-                            : null
-                      return (
-                        <div>
-                          <div className="mb-1 flex items-center gap-1.5">
-                            <p className="text-xs font-medium text-muted-foreground">
-                              {t('toolCall.content')}
-                            </p>
-                            <span className="text-[9px] text-muted-foreground/55 font-mono">
-                              {detectLang(String(input.file_path ?? input.path ?? ''))}
-                              {totalLines !== null
-                                ? ` · ${t('toolCall.lineCount', { count: totalLines })}`
-                                : ''}
+                    return (
+                      <div>
+                        <div className="mb-1 flex items-center gap-1.5">
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {t('toolCall.content')}
+                          </p>
+                          <span className="text-[9px] text-muted-foreground/55 font-mono">
+                            {detectLang(String(input.file_path ?? input.path ?? ''))}
+                            {totalLines !== null
+                              ? ` · ${t('toolCall.lineCount', { count: totalLines })}`
+                              : ''}
+                          </span>
+                          {isOmitted && (
+                            <span className="rounded bg-muted px-1 py-0.5 text-[9px] text-muted-foreground/60">
+                              {t('toolCall.preview')}
                             </span>
-                            {isOmitted && (
-                              <span className="rounded bg-muted px-1 py-0.5 text-[9px] text-muted-foreground/60">
-                                {t('toolCall.preview')}
-                              </span>
-                            )}
-                            {writeContent && <CopyBtn text={writeContent} />}
-                          </div>
-                          <LazySyntaxHighlighter
-                            language={detectLang(String(input.file_path ?? input.path ?? ''))}
-                            wrapLongLines
-                            customStyle={{
-                              margin: 0,
-                              padding: '0.5rem',
-                              borderRadius: '0.375rem',
-                              fontSize: '11px',
-                              maxHeight: '200px',
-                              overflow: 'auto',
-                              fontFamily: MONO_FONT
-                            }}
-                            codeTagProps={{ style: { fontFamily: 'inherit' } }}
-                          >
-                            {displayContent}
-                          </LazySyntaxHighlighter>
-                        </div>
-                      )
-                    })()}
-                  {/* Structured Input — tool-specific rendering */}
-                  {shouldShowStructuredInput && (
-                    <div className="space-y-2">
-                      <ToolDetailSectionHeader label={t('toolCall.parameters')} />
-                      <StructuredInput name={name} input={input} status={status} />
-                    </div>
-                  )}
-                  {shouldShowResultHeader && (
-                    <ToolDetailSectionHeader label={t('toolCall.result')} />
-                  )}
-                  {/* Output — tool-specific rendering */}
-                  {output && name === 'Read' && hasImageBlocks(output) && (
-                    <ImageOutputBlock output={output} />
-                  )}
-                  {shouldRenderOutputPanels &&
-                    output &&
-                    name === 'Read' &&
-                    !hasImageBlocks(output) &&
-                    readTextOutputRevealed &&
-                    outputText && (
-                      <ReadOutputBlock
-                        output={outputText}
-                        filePath={String(input.file_path ?? input.path ?? '')}
-                      />
-                    )}
-                  {shouldRenderOutputPanels &&
-                    name === 'Bash' &&
-                    (status === 'running' || outputText || getBashInputTerminalId(input)) && (
-                      <BashOutputBlock
-                        output={outputText ?? ''}
-                        input={input}
-                        toolUseId={toolUseId}
-                        status={status}
-                      />
-                    )}
-                  {shouldRenderOutputPanels && output && name === 'Grep' && outputText && (
-                    <GrepOutputBlock output={outputText} pattern={String(input.pattern ?? '')} />
-                  )}
-                  {shouldRenderOutputPanels && output && name === 'Glob' && outputText && (
-                    <GlobOutputBlock output={outputText} />
-                  )}
-                  {shouldRenderOutputPanels && output && name === 'LS' && outputText && (
-                    <LSOutputBlock output={outputText} />
-                  )}
-                  {shouldRenderOutputPanels &&
-                    output &&
-                    ['Edit', 'Write', 'Delete'].includes(name) &&
-                    (() => {
-                      const s = outputText ?? ''
-                      const parsed = decodeStructuredToolResult(s)
-                      const success = !!(
-                        parsed &&
-                        !Array.isArray(parsed) &&
-                        parsed.success === true
-                      )
-                      return (
-                        <div className="flex items-center gap-1.5 text-xs">
-                          {success ? (
-                            <>
-                              <CheckCircle2 className="size-3 text-green-500" />
-                              <span className="text-green-500/70">
-                                {t('toolCall.appliedSuccessfully')}
-                              </span>
-                            </>
-                          ) : (
-                            <>
-                              <XCircle className="size-3 text-destructive" />
-                              <span className="text-destructive/70 font-mono truncate">
-                                {s.slice(0, 100)}
-                              </span>
-                            </>
                           )}
+                          {writeContent && <CopyBtn text={writeContent} />}
                         </div>
-                      )
-                    })()}
-                  {shouldRenderOutputPanels && output && extensionToolResult && (
-                    <ExtensionToolResultCard output={output} />
+                        <LazySyntaxHighlighter
+                          language={detectLang(String(input.file_path ?? input.path ?? ''))}
+                          wrapLongLines
+                          customStyle={{
+                            margin: 0,
+                            padding: '0.5rem',
+                            borderRadius: '0.375rem',
+                            fontSize: '11px',
+                            maxHeight: '200px',
+                            overflow: 'auto',
+                            fontFamily: MONO_FONT
+                          }}
+                          codeTagProps={{ style: { fontFamily: 'inherit' } }}
+                        >
+                          {displayContent}
+                        </LazySyntaxHighlighter>
+                      </div>
+                    )
+                  })()}
+                {/* Structured Input — tool-specific rendering */}
+                {shouldShowStructuredInput && (
+                  <div className="space-y-2">
+                    <ToolDetailSectionHeader label={t('toolCall.parameters')} />
+                    <StructuredInput name={name} input={input} status={status} />
+                  </div>
+                )}
+                {shouldShowResultHeader && <ToolDetailSectionHeader label={t('toolCall.result')} />}
+                {/* Output — tool-specific rendering */}
+                {output && name === 'Read' && hasImageBlocks(output) && (
+                  <ImageOutputBlock output={output} />
+                )}
+                {shouldRenderOutputPanels &&
+                  output &&
+                  name === 'Read' &&
+                  !hasImageBlocks(output) &&
+                  readTextOutputRevealed &&
+                  outputText && (
+                    <ReadOutputBlock
+                      output={outputText}
+                      filePath={String(input.file_path ?? input.path ?? '')}
+                    />
                   )}
-                  {shouldRenderOutputPanels &&
-                    output &&
-                    !extensionToolResult &&
-                    ![
-                      'Read',
-                      'Bash',
-                      'Grep',
-                      'Glob',
-                      'LS',
-                      'TaskCreate',
-                      'TaskUpdate',
-                      'TaskGet',
-                      'TaskList',
-                      'Edit',
-                      'Write',
-                      'Delete',
-                      'AskUserQuestion',
-                      'Skill',
-                      'visualize_show_widget'
-                    ].includes(name) &&
-                    (hasImageBlocks(output) ? (
-                      <ImageOutputBlock output={output} />
-                    ) : outputText ? (
-                      <OutputBlock output={outputText} />
-                    ) : null)}
-                  {/* Error */}
-                  {displayError && (
-                    <div>
-                      <p className="mb-1 text-xs font-medium text-destructive">
-                        {t('error.label')}
-                      </p>
-                      <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-xs text-destructive font-mono">
-                        {displayError}
-                      </pre>
-                    </div>
+                {shouldRenderOutputPanels &&
+                  isCommandTool &&
+                  (status === 'running' ||
+                    status === 'streaming' ||
+                    outputText ||
+                    getBashInputTerminalId(input) ||
+                    getShellInputCommand(input)) && (
+                    <BashOutputBlock
+                      name={name}
+                      output={outputText ?? ''}
+                      input={input}
+                      toolUseId={toolUseId}
+                      status={status}
+                    />
                   )}
-                </>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+                {shouldRenderOutputPanels && output && name === 'Grep' && outputText && (
+                  <GrepOutputBlock output={outputText} pattern={String(input.pattern ?? '')} />
+                )}
+                {shouldRenderOutputPanels && output && name === 'Glob' && outputText && (
+                  <GlobOutputBlock output={outputText} />
+                )}
+                {shouldRenderOutputPanels && output && name === 'LS' && outputText && (
+                  <LSOutputBlock output={outputText} />
+                )}
+                {shouldRenderOutputPanels &&
+                  output &&
+                  ['Edit', 'Write', 'Delete'].includes(name) &&
+                  (() => {
+                    const s = outputText ?? ''
+                    const parsed = decodeStructuredToolResult(s)
+                    const success = !!(parsed && !Array.isArray(parsed) && parsed.success === true)
+                    return (
+                      <div className="flex items-center gap-1.5 text-xs">
+                        {success ? (
+                          <>
+                            <CheckCircle2 className="size-3 text-green-500" />
+                            <span className="text-green-500/70">
+                              {t('toolCall.appliedSuccessfully')}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <XCircle className="size-3 text-destructive" />
+                            <span className="text-destructive/70 font-mono truncate">
+                              {s.slice(0, 100)}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    )
+                  })()}
+                {shouldRenderOutputPanels && output && extensionToolResult && (
+                  <ExtensionToolResultCard output={output} />
+                )}
+                {shouldRenderOutputPanels &&
+                  output &&
+                  !extensionToolResult &&
+                  ![
+                    'Read',
+                    'Bash',
+                    'Shell',
+                    'PowerShell',
+                    'Grep',
+                    'Glob',
+                    'LS',
+                    'TaskCreate',
+                    'TaskUpdate',
+                    'TaskGet',
+                    'TaskList',
+                    'Edit',
+                    'Write',
+                    'Delete',
+                    'AskUserQuestion',
+                    'Skill',
+                    'visualize_show_widget'
+                  ].includes(name) &&
+                  (hasImageBlocks(output) ? (
+                    <ImageOutputBlock output={output} />
+                  ) : outputText ? (
+                    <OutputBlock output={outputText} />
+                  ) : null)}
+                {/* Error */}
+                {displayError && (
+                  <div>
+                    <p className="mb-1 text-xs font-medium text-destructive">{t('error.label')}</p>
+                    <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-xs text-destructive font-mono">
+                      {displayError}
+                    </pre>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

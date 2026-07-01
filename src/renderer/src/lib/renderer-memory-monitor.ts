@@ -1,12 +1,20 @@
 import type { ContentBlock, UnifiedMessage } from './api/types'
-import { getRequestDebugStoreStats } from './debug-store'
+import { compactRequestDebugStore, getRequestDebugStoreStats } from './debug-store'
 import { useChatStore } from '../stores/chat-store'
+import { useAgentStore } from '../stores/agent-store'
 import { useSettingsStore } from '../stores/settings-store'
+import { toast } from 'sonner'
+import { invokeMessagePackBinary } from './ipc/messagepack-ipc-client'
+import { DIAGNOSTICS_MEMORY_SAMPLE_MSGPACK_CHANNEL } from '../../../shared/messagepack/binary-ipc'
 
 const RENDERER_MEMORY_SAMPLE_MS = 60_000
 const RENDERER_MEMORY_INITIAL_DELAY_MS = 10_000
 const WARN_USED_JS_HEAP_BYTES = 512 * 1024 * 1024
+const SOFT_USED_JS_HEAP_BYTES = 700 * 1024 * 1024
+const HARD_USED_JS_HEAP_BYTES = 1.2 * 1024 * 1024 * 1024
 const WARN_RESIDENT_CONTENT_CHARS = 64 * 1024 * 1024
+const SOFT_RESIDENT_CONTENT_CHARS = 128 * 1024 * 1024
+const MEMORY_PRESSURE_COOLDOWN_MS = 30_000
 
 type ChromiumPerformanceMemory = {
   usedJSHeapSize?: number
@@ -14,20 +22,61 @@ type ChromiumPerformanceMemory = {
   jsHeapSizeLimit?: number
 }
 
+interface ProcessMemoryDiagnostics {
+  sampledAt: number
+  main: {
+    pid: number
+    memory: {
+      rss: number
+      heapTotal: number
+      heapUsed: number
+      external: number
+      arrayBuffers: number
+    }
+  }
+  appMetrics: Array<{
+    pid: number
+    type: string
+    memory: {
+      workingSetKb?: number
+      peakWorkingSetKb?: number
+      privateKb?: number
+      sharedKb?: number
+    } | null
+  }>
+  nativeWorker: {
+    success?: boolean
+    pid?: number | null
+    managedBytes?: number
+    heapBytes?: number
+    fragmentedBytes?: number
+    workingSetBytes?: number
+    error?: string | null
+  } | null
+}
+
 let installed = false
+let reducedMemoryMode = false
+let lastMemoryPressureAt = 0
 
 export function installRendererMemoryMonitor(): () => void {
   if (installed) return () => {}
   installed = true
 
-  const initialTimer = window.setTimeout(sampleRendererMemory, RENDERER_MEMORY_INITIAL_DELAY_MS)
-  const interval = window.setInterval(sampleRendererMemory, RENDERER_MEMORY_SAMPLE_MS)
+  const initialTimer = window.setTimeout(runRendererMemorySample, RENDERER_MEMORY_INITIAL_DELAY_MS)
+  const interval = window.setInterval(runRendererMemorySample, RENDERER_MEMORY_SAMPLE_MS)
 
   return () => {
     window.clearTimeout(initialTimer)
     window.clearInterval(interval)
     installed = false
   }
+}
+
+function runRendererMemorySample(): void {
+  void sampleRendererMemory().catch((error) => {
+    console.warn('[RendererMemory] sample failed', error)
+  })
 }
 
 function shouldLogRendererMemory(): boolean {
@@ -45,13 +94,12 @@ function readChromiumMemory(): ChromiumPerformanceMemory | null {
   return memory ?? null
 }
 
-function sampleRendererMemory(): void {
+async function sampleRendererMemory(): Promise<void> {
   const chatStore = useChatStore.getState()
   chatStore.releaseDormantSessions()
 
-  if (!shouldLogRendererMemory()) return
-
   const state = useChatStore.getState()
+  const agentState = useAgentStore.getState()
   const residentSessions = state.sessions.filter((session) => session.messages.length > 0)
   const residentMessages = residentSessions.reduce(
     (sum, session) => sum + session.messages.length,
@@ -67,6 +115,25 @@ function sampleRendererMemory(): void {
   )
   const heap = readChromiumMemory()
   const debugStore = getRequestDebugStoreStats()
+  const agentStoreChars = estimateAgentStoreChars(agentState)
+  const domRows = document.querySelectorAll('[data-message-content] [data-index]').length
+  const usedJsHeap = heap?.usedJSHeapSize ?? 0
+
+  if (
+    usedJsHeap >= HARD_USED_JS_HEAP_BYTES ||
+    residentContentChars >= SOFT_RESIDENT_CONTENT_CHARS * 2
+  ) {
+    applyMemoryPressure('hard')
+  } else if (
+    usedJsHeap >= SOFT_USED_JS_HEAP_BYTES ||
+    residentContentChars >= SOFT_RESIDENT_CONTENT_CHARS
+  ) {
+    applyMemoryPressure('soft')
+  }
+
+  if (!shouldLogRendererMemory()) return
+  const processMemory = await readProcessMemoryDiagnostics()
+
   const details = {
     heap: heap
       ? {
@@ -80,6 +147,9 @@ function sampleRendererMemory(): void {
     residentMessages,
     knownMessages: state.sessions.reduce((sum, session) => sum + session.messageCount, 0),
     residentContentMB: charsToMb(residentContentChars),
+    agentStoreMB: charsToMb(agentStoreChars),
+    domRows,
+    reducedMemoryMode,
     generatingImagePreviews: Object.keys(state.generatingImagePreviews).length,
     previewContentMB: charsToMb(previewContentChars),
     debugStore: {
@@ -88,15 +158,76 @@ function sampleRendererMemory(): void {
       bodyMB: charsToMb(debugStore.bodyChars),
       contextWindowMB: charsToMb(debugStore.contextWindowChars)
     },
+    processes: processMemory
+      ? {
+          sampledAt: processMemory.sampledAt,
+          main: {
+            pid: processMemory.main.pid,
+            rssMB: bytesToMb(processMemory.main.memory.rss),
+            heapUsedMB: bytesToMb(processMemory.main.memory.heapUsed)
+          },
+          nativeWorker: processMemory.nativeWorker
+            ? {
+                pid: processMemory.nativeWorker.pid ?? null,
+                success: processMemory.nativeWorker.success ?? null,
+                workingSetMB: bytesToMb(processMemory.nativeWorker.workingSetBytes),
+                managedMB: bytesToMb(processMemory.nativeWorker.managedBytes),
+                heapMB: bytesToMb(processMemory.nativeWorker.heapBytes),
+                error: processMemory.nativeWorker.error ?? null
+              }
+            : null,
+          appMetrics: processMemory.appMetrics.map((metric) => ({
+            pid: metric.pid,
+            type: metric.type,
+            workingSetMB: metric.memory?.workingSetKb
+              ? bytesToMb(metric.memory.workingSetKb * 1024)
+              : null,
+            privateMB: metric.memory?.privateKb ? bytesToMb(metric.memory.privateKb * 1024) : null
+          }))
+        }
+      : null,
     activeSessionId: state.activeSessionId
   }
-  const usedJsHeap = heap?.usedJSHeapSize ?? 0
   const shouldWarn =
     usedJsHeap >= WARN_USED_JS_HEAP_BYTES ||
     residentContentChars >= WARN_RESIDENT_CONTENT_CHARS ||
+    agentStoreChars >= WARN_RESIDENT_CONTENT_CHARS ||
     previewContentChars >= WARN_RESIDENT_CONTENT_CHARS
   const log = shouldWarn ? console.warn : console.log
   log('[RendererMemory] sample', details)
+}
+
+async function readProcessMemoryDiagnostics(): Promise<ProcessMemoryDiagnostics | null> {
+  try {
+    return await invokeMessagePackBinary<ProcessMemoryDiagnostics>(
+      DIAGNOSTICS_MEMORY_SAMPLE_MSGPACK_CHANNEL,
+      {}
+    )
+  } catch (error) {
+    console.warn('[RendererMemory] process memory sample failed', error)
+    return null
+  }
+}
+
+function applyMemoryPressure(mode: 'soft' | 'hard'): void {
+  const now = Date.now()
+  if (now - lastMemoryPressureAt < MEMORY_PRESSURE_COOLDOWN_MS && mode !== 'hard') return
+  lastMemoryPressureAt = now
+
+  const chatStore = useChatStore.getState()
+  chatStore.trimResidentMessageWindows()
+  compactRequestDebugStore(mode === 'hard' ? 512 : 2_000)
+  useAgentStore.getState().compactMemoryFootprint()
+
+  if (mode !== 'hard' || reducedMemoryMode) return
+  reducedMemoryMode = true
+  document.documentElement.dataset.reducedMemory = 'true'
+  try {
+    localStorage.setItem('openCowork.reducedMemoryMode', '1')
+  } catch {
+    // Ignore storage failures; the in-memory flag is enough for this run.
+  }
+  toast.warning('Reduced-memory mode enabled for this window')
 }
 
 function estimateMessagesContentChars(messages: UnifiedMessage[]): number {
@@ -144,6 +275,19 @@ function estimateJsonChars(value: unknown): number {
   } catch {
     return 0
   }
+}
+
+function estimateAgentStoreChars(state: ReturnType<typeof useAgentStore.getState>): number {
+  return (
+    estimateJsonChars(state.pendingToolCalls) +
+    estimateJsonChars(state.executedToolCalls) +
+    estimateJsonChars(state.activeSubAgents) +
+    estimateJsonChars(state.completedSubAgents) +
+    estimateJsonChars(state.subAgentHistory) +
+    estimateJsonChars(state.sessionToolCallsCache) +
+    estimateJsonChars(state.sessionSubAgentLiveCache) +
+    estimateJsonChars(state.backgroundProcesses)
+  )
 }
 
 function bytesToMb(value?: number): number | null {

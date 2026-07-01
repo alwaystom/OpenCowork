@@ -37,6 +37,23 @@ internal sealed record MessageDeleteResult(bool Success, bool Deleted, string? E
 
 internal sealed record MessageCountResult(bool Success, int Count, string? Error);
 
+internal sealed record MessageWindowResult(
+    bool Success,
+    List<MessageRow> Rows,
+    int Start,
+    int End,
+    int Total,
+    int AnchorSortOrder,
+    string? Error);
+
+internal sealed record MessageInsertArtifactsResult(
+    bool Success,
+    int Inserted,
+    int Start,
+    int End,
+    int Total,
+    string? Error);
+
 internal sealed record MessageDeleteLastResult(bool Success, MessageRow? Message, string? Error);
 
 internal sealed record MessageCompactResult(

@@ -369,22 +369,46 @@ export function subscribeGlobalMemoryUpdates(
   })
 }
 
+async function invokeStringIpc(ipc: IPCClient, channel: string): Promise<string | undefined> {
+  try {
+    const result = await ipc.invoke(channel)
+    return typeof result === 'string' && result.trim() ? result.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function getRendererEnvHomeDir(): string | undefined {
+  if (typeof window === 'undefined') return undefined
+
+  const env = window.electron?.process?.env
+  const homeDir = env?.HOME || env?.USERPROFILE
+  if (homeDir?.trim()) return homeDir.trim()
+
+  const homeDrive = env?.HOMEDRIVE?.trim()
+  const homePath = env?.HOMEPATH?.trim()
+  return homeDrive && homePath ? `${homeDrive}${homePath}` : undefined
+}
+
 export async function resolveGlobalMemoryHomePath(ipc: IPCClient): Promise<string | undefined> {
   if (cachedGlobalHomePath) {
     return cachedGlobalHomePath
   }
 
-  try {
-    const homeDirResult = await ipc.invoke(IPC.APP_HOMEDIR)
-    if (typeof homeDirResult !== 'string' || !homeDirResult.trim()) {
-      return undefined
-    }
-
-    cachedGlobalHomePath = joinFsPath(homeDirResult, '.open-cowork')
+  const globalMemoryHomePath = await invokeStringIpc(ipc, IPC.APP_GLOBAL_MEMORY_HOME)
+  if (globalMemoryHomePath) {
+    cachedGlobalHomePath = globalMemoryHomePath
     return cachedGlobalHomePath
-  } catch {
-    return undefined
   }
+
+  const homeDirResult = await invokeStringIpc(ipc, IPC.APP_HOMEDIR)
+  const homeDir = homeDirResult ?? getRendererEnvHomeDir()
+  if (homeDir) {
+    cachedGlobalHomePath = joinFsPath(homeDir, '.open-cowork')
+    return cachedGlobalHomePath
+  }
+
+  return undefined
 }
 
 export async function resolveGlobalMemoryPath(ipc: IPCClient): Promise<string | undefined> {

@@ -72,7 +72,10 @@ import { useUIStore } from '@renderer/stores/ui-store'
 import { useAgentStore } from '@renderer/stores/agent-store'
 import { useTeamStore } from '@renderer/stores/team-store'
 import { abortSession } from '@renderer/hooks/use-chat-actions'
-import { sessionToMarkdown } from '@renderer/lib/utils/export-chat'
+import {
+  exportSessionMarkdownFromDb,
+  exportSessionSnapshotFromDb
+} from '@renderer/lib/utils/export-chat'
 import type { ProviderType } from '@renderer/lib/api/types'
 import packageJson from '../../../../../package.json'
 
@@ -287,10 +290,9 @@ export function AppSidebar(): React.JSX.Element {
   }
 
   const handleExport = async (sessionId: string): Promise<void> => {
-    await useChatStore.getState().loadSessionMessages(sessionId)
     const session = getSessionSnapshot(sessionId)
     if (!session) return
-    const md = sessionToMarkdown(session)
+    const md = await exportSessionMarkdownFromDb(session)
     const filename =
       session.title
         .replace(/[^a-zA-Z0-9-_ ]/g, '')
@@ -674,10 +676,13 @@ export function AppSidebar(): React.JSX.Element {
                                 </ContextMenuItem>
                                 <ContextMenuItem
                                   onClick={async () => {
-                                    await useChatStore.getState().loadSessionMessages(session.id)
                                     const snapshot = getSessionSnapshot(session.id)
                                     if (!snapshot) return
-                                    const json = JSON.stringify(snapshot, null, 2)
+                                    const json = JSON.stringify(
+                                      await exportSessionSnapshotFromDb(snapshot),
+                                      null,
+                                      2
+                                    )
                                     const blob = new Blob([json], { type: 'application/json' })
                                     const url = URL.createObjectURL(blob)
                                     const a = document.createElement('a')

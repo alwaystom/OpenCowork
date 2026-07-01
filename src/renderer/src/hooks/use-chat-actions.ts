@@ -77,7 +77,11 @@ import type {
   SelectedFileReadsMeta,
   SelectedFileReference
 } from '@renderer/lib/api/types'
-import { setLastDebugInfo, setRequestTraceInfo } from '@renderer/lib/debug-store'
+import {
+  setLastDebugInfo,
+  setRequestTraceInfo,
+  shouldKeepFullDebugBody
+} from '@renderer/lib/debug-store'
 import { estimateTokens } from '@renderer/lib/format-tokens'
 import {
   QUEUED_IMAGE_ONLY_TEXT,
@@ -100,6 +104,8 @@ import { parseSelectFileText } from '@renderer/lib/select-file-tags'
 import { type AgentEvent, type ToolCallState } from '@renderer/lib/agent/types'
 import { recordUsageEvent } from '@renderer/lib/usage-analytics'
 import {
+  isCompactBoundaryMessage,
+  isCompactSummaryLikeMessage,
   isCompactSummaryMessage,
   mergeCompressedMessagesKeepHistory,
   mergeLoopEndMessagesKeepHistory,
@@ -211,6 +217,8 @@ const stopAfterCurrentRequestSessions = new Set<string>()
 const continuingToolExecutionSessions = new Set<string>()
 const pendingGoalContinuationSessions = new Set<string>()
 const scheduledGoalContinuationSessions = new Set<string>()
+const SIDECAR_CONTEXT_SOURCE_MAX_MESSAGES = 160
+const CONTINUE_TOOL_TAIL_WINDOW_MESSAGES = 120
 installSessionControlSyncListener((event) => {
   applySessionControlSyncEvent(event)
 })
@@ -832,6 +840,16 @@ function attachLiveCompactSummaryDisplayAnchor(
   })
 
   return { messages, anchored }
+}
+
+function extractCompactArtifactMessages(messages?: UnifiedMessage[] | null): UnifiedMessage[] {
+  if (!messages || messages.length === 0) return []
+
+  const boundaryMessage = messages.find((message) => isCompactBoundaryMessage(message))
+  const summaryMessage =
+    messages.find((message) => isCompactSummaryMessage(message)) ??
+    messages.find((message) => isCompactSummaryLikeMessage(message))
+  return [boundaryMessage, summaryMessage].filter((message): message is UnifiedMessage => !!message)
 }
 
 function getTaskProgressSnapshot(sessionId: string): string {
@@ -1752,6 +1770,73 @@ export function hasActiveSessionRunForSession(sessionId: string): boolean {
   return hasActiveSessionRun(sessionId)
 }
 
+function collectMessageToolUseIds(message: UnifiedMessage | undefined): Set<string> {
+  const ids = new Set<string>()
+  if (!message || !Array.isArray(message.content)) return ids
+
+  for (const block of message.content) {
+    if (block.type !== 'tool_use' || !block.id) continue
+    ids.add(block.id)
+  }
+  return ids
+}
+
+function collectMessageToolResultIds(message: UnifiedMessage | undefined): Set<string> {
+  const ids = new Set<string>()
+  if (!message || !Array.isArray(message.content)) return ids
+
+  for (const block of message.content) {
+    if (block.type !== 'tool_result' || !block.toolUseId) continue
+    ids.add(block.toolUseId)
+  }
+  return ids
+}
+
+function hasUnresolvedTailToolUse(sessionId: string): boolean {
+  const chatState = useChatStore.getState()
+  const session = chatState.sessions.find((item) => item.id === sessionId)
+  if (!session) return false
+
+  const streamingMessageId = chatState.streamingMessages[sessionId] ?? null
+  const preferredAssistantIndex = streamingMessageId
+    ? session.messages.findIndex((message) => message.id === streamingMessageId)
+    : -1
+  const startIndex =
+    preferredAssistantIndex >= 0 ? preferredAssistantIndex : session.messages.length - 1
+
+  for (let index = startIndex; index >= 0; index -= 1) {
+    const message = session.messages[index]
+    if (message?.role !== 'assistant') continue
+
+    const toolUseIds = collectMessageToolUseIds(message)
+    if (toolUseIds.size === 0) {
+      return false
+    }
+
+    const pairedToolUseIds = new Set<string>()
+    for (
+      let candidateIndex = index + 1;
+      candidateIndex < session.messages.length;
+      candidateIndex += 1
+    ) {
+      const candidate = session.messages[candidateIndex]
+      if (candidate?.role !== 'user') break
+
+      const resultIds = collectMessageToolResultIds(candidate)
+      if (resultIds.size === 0) break
+
+      for (const resultId of resultIds) {
+        if (toolUseIds.has(resultId)) pairedToolUseIds.add(resultId)
+      }
+      if (pairedToolUseIds.size === toolUseIds.size) return false
+    }
+
+    return true
+  }
+
+  return false
+}
+
 function requestStopAfterCurrentRequest(sessionId: string): boolean {
   if (!hasActiveSessionRun(sessionId)) return false
   stopAfterCurrentRequestSessions.add(sessionId)
@@ -1851,6 +1936,25 @@ export function quotePendingSessionMessageIntoConversation(
   const hasImages = !!target.images && target.images.length > 0
   const trimmedText = target.text.trim()
   if (!trimmedText && !hasImages && !target.command) return false
+
+  if (hasActiveSessionRun(sessionId) && hasUnresolvedTailToolUse(sessionId)) {
+    const remaining = [...queue.slice(0, index), ...queue.slice(index + 1)]
+    const processAfterToolResults: QueuedSessionMessage = {
+      ...target,
+      source: 'quoted',
+      dispatchMode: 'after_loop',
+      options: target.options ? { ...target.options } : undefined
+    }
+
+    replaceSessionPendingMessages(sessionId, [processAfterToolResults, ...remaining])
+    setPendingSessionDispatchPaused(sessionId, false)
+
+    if (!requestStopAfterCurrentRequest(sessionId)) {
+      dispatchNextQueuedMessage(sessionId)
+    }
+
+    return true
+  }
 
   // Render immediately; process after the current provider request finishes.
   const textBlocks: Array<Extract<ContentBlock, { type: 'text' }>> = []
@@ -2987,7 +3091,14 @@ async function canUseSidecarForAgentRun(args: {
     planModeAllowedTools: args.isPlanMode ? [...PLAN_MODE_ALLOWED_TOOLS] : undefined,
     teamToolsActive: args.teamToolsActive,
     activeTeamName: args.activeTeamName,
-    imagePluginProvider: args.imagePluginProvider
+    imagePluginProvider: args.imagePluginProvider,
+    contextSource: args.sessionId
+      ? {
+          sessionId: args.sessionId,
+          maxMessages: SIDECAR_CONTEXT_SOURCE_MAX_MESSAGES,
+          compressionMode: args.compression ? 'auto' : 'none'
+        }
+      : undefined
   })
   if (!sidecarRequest) return false
 
@@ -4348,14 +4459,11 @@ export function useChatActions(): {
           try {
             const contextCompressionAllowed =
               settings.contextCompressionEnabled && options?.skipAutoContextCompression !== true
-            const shouldLoadFullCompressionContext =
-              settings.contextCompressionEnabled && compressionContextLength > 0
-            const requestContextMaxMessages = shouldLoadFullCompressionContext ? null : undefined
             let messagesToSend = await useChatStore
               .getState()
               .getSessionMessagesForRequest(sessionId, {
                 includeTrailingAssistantPlaceholder: !!existingAssistantMessage,
-                requestContextMaxMessages
+                requestContextMaxMessages: SIDECAR_CONTEXT_SOURCE_MAX_MESSAGES
               })
             messagesToSend = ensureRequestContainsExpectedUserMessage(
               messagesToSend,
@@ -4491,7 +4599,7 @@ export function useChatActions(): {
               pluginSenderId: session?.pluginSenderId,
               pluginSenderName: session?.pluginSenderName,
               sshConnectionId: session?.sshConnectionId,
-              includeFullDebugBody: settings.devMode
+              includeFullDebugBody: settings.devMode && shouldKeepFullDebugBody()
             })
 
             const useSidecar = await canUseSidecarForAgentRun({
@@ -5027,6 +5135,28 @@ export function useChatActions(): {
                   }
                   break
 
+                case 'tool_call_update':
+                  runUsedTools = true
+                  liveToolNames.set(event.toolCall.id, event.toolCall.name)
+                  if (isSessionForeground(sessionId!)) {
+                    useAgentStore.getState().updateToolCall(
+                      event.toolCall.id,
+                      {
+                        input: summarizeImmediateLiveToolInput(
+                          event.toolCall.id,
+                          event.toolCall.name,
+                          event.toolCall.input
+                        ),
+                        status: event.toolCall.status,
+                        output: event.toolCall.output,
+                        error: event.toolCall.error,
+                        startedAt: event.toolCall.startedAt
+                      },
+                      sessionId!
+                    )
+                  }
+                  break
+
                 case 'tool_call_approval_needed': {
                   liveToolNames.set(event.toolCall.id, event.toolCall.name)
                   // Skip adding to pendingToolCalls when auto-approve is active —
@@ -5390,17 +5520,19 @@ export function useChatActions(): {
 
                 case 'context_compressed':
                   {
-                    const compressedMessages = event.messages
+                    const compressedMessages = extractCompactArtifactMessages(
+                      event.compactArtifacts ?? event.messages
+                    )
 
                     streamDeltaBuffer.flushNow()
                     flushRuntimeForegroundMutations()
-                    if (!compressedMessages || !sessionId) {
+                    if (compressedMessages.length === 0 || !sessionId) {
                       break
                     }
 
-                    const currentMessages = await useChatStore
-                      .getState()
-                      .getFullSessionMessagesForMutation(sessionId)
+                    const chatStore = useChatStore.getState()
+                    const currentMessages = chatStore.getSessionMessages(sessionId)
+                    const currentSession = chatStore.sessions.find((item) => item.id === sessionId)
                     const assistantMessage = currentMessages.find(
                       (message) => message.id === assistantMsgId
                     )
@@ -5422,16 +5554,24 @@ export function useChatActions(): {
                     // keeps the continuing output after the summary, and store a
                     // display anchor so MessageList can render the card inline at
                     // the content boundary instead of as a sticky tail row.
-                    const merged = await mergeCompressedMessagesIntoSession({
-                      sessionId,
-                      compressedMessages: anchored.messages,
-                      currentMessages,
-                      ...(insertBeforeAssistant || anchored.anchored
-                        ? { insertBeforeIds: [assistantMsgId] }
-                        : { insertAtEnd: true })
-                    })
-                    if (!merged) {
-                      console.warn('[Context Compression] Failed to merge compressed messages', {
+                    const shouldInsertBeforeAssistant = insertBeforeAssistant || anchored.anchored
+                    const assistantIndex = currentMessages.findIndex(
+                      (message) => message.id === assistantMsgId
+                    )
+                    const insertSortOrder =
+                      shouldInsertBeforeAssistant && assistantIndex >= 0 && currentSession
+                        ? currentSession.loadedRangeStart + assistantIndex
+                        : (currentSession?.messageCount ?? currentMessages.length)
+                    const inserted = await useChatStore
+                      .getState()
+                      .insertCompactArtifacts(sessionId, anchored.messages, {
+                        ...(shouldInsertBeforeAssistant
+                          ? { insertBeforeMessageId: assistantMsgId }
+                          : { insertAtEnd: true }),
+                        insertSortOrder
+                      })
+                    if (!inserted) {
+                      console.warn('[Context Compression] Failed to insert compact artifacts', {
                         sessionId,
                         compressedCount: compressedMessages.length
                       })
@@ -5651,7 +5791,7 @@ export function useChatActions(): {
     continuingToolExecutionSessions.add(sessionId)
 
     try {
-      await chatStore.loadSessionMessages(sessionId, true)
+      await chatStore.loadRecentSessionMessages(sessionId, true, CONTINUE_TOOL_TAIL_WINDOW_MESSAGES)
     } catch (error) {
       continuingToolExecutionSessions.delete(sessionId)
       throw error
@@ -6233,14 +6373,10 @@ async function runSimpleChat(
 ): Promise<void> {
   const chatStore = useChatStore.getState()
   const chatModelConfig = findProviderModel(config.providerId, config.model).modelConfig
-  const requestContextMaxMessages =
-    useSettingsStore.getState().contextCompressionEnabled && chatModelConfig?.contextLength
-      ? null
-      : undefined
   let requestMessages = ensureRequestContainsExpectedUserMessage(
     await chatStore.getSessionMessagesForRequest(sessionId, {
       includeTrailingAssistantPlaceholder: options?.includeTrailingAssistantPlaceholder ?? false,
-      requestContextMaxMessages
+      requestContextMaxMessages: SIDECAR_CONTEXT_SOURCE_MAX_MESSAGES
     }),
     options?.expectedUserMessage
   )
@@ -6260,6 +6396,7 @@ async function runSimpleChat(
   const streamDeltaBuffer = createStreamDeltaBuffer(sessionId, assistantMsgId)
   const requestHasImages = requestMessages.some(messageContainsImage)
   const useProviderTurnOnlyPath = useSettingsStore.getState().devMode || requestHasImages
+  const nativeProvider = isNativeSidecarProviderConfig(config)
   const sidecarRequest = buildSidecarAgentRunRequest({
     messages: requestMessages,
     provider: config,
@@ -6285,7 +6422,6 @@ async function runSimpleChat(
     })
   }
 
-  const nativeProvider = isNativeSidecarProviderConfig(config)
   const supportsAgentRun =
     nativeProvider && !useProviderTurnOnlyPath && sidecarRequest
       ? await canSidecarHandle('agent.run')

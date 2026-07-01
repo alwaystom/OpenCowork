@@ -239,8 +239,10 @@ export function compactShellOutputPayload(
   const output = stringField(payload.output)
   const stderr = stringField(payload.stderr)
   const error = stringField(payload.error)
-  const primaryOutputKey: 'stdout' | 'output' = 'stdout' in payload ? 'stdout' : 'output'
-  const primaryOutput = stdout || output
+  const hasCombinedOutput = 'output' in payload && output.length > 0
+  const primaryOutputKey: 'stdout' | 'output' =
+    hasCombinedOutput || !('stdout' in payload) ? 'output' : 'stdout'
+  const primaryOutput = hasCombinedOutput ? output : stdout || output
 
   const stdoutPreview = compactStream(primaryOutput, opts.stdoutMaxChars, opts)
   const stderrPreview = compactStream(stderr, opts.stderrMaxChars, opts)
@@ -258,9 +260,11 @@ export function compactShellOutputPayload(
     if ('output' in result) result.output = ''
   } else if ('output' in payload || stdoutPreview.text) {
     result.output = stdoutPreview.text
+    if ('stdout' in result) result.stdout = ''
+    if ('stderr' in result) result.stderr = ''
   }
 
-  if ('stderr' in payload || stderrPreview.text) {
+  if (!hasCombinedOutput && ('stderr' in payload || stderrPreview.text)) {
     result.stderr = stderrPreview.text
   }
   if ('error' in payload || errorPreview.text) {

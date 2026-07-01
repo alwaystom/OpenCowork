@@ -1,16 +1,19 @@
-import { app } from 'electron'
+import { app, crashReporter } from 'electron'
 import { appendFileSync, mkdirSync } from 'fs'
 import { release } from 'os'
 import { join } from 'path'
 import { getDataDir } from './db/database'
 
 const LOG_DIR = join(getDataDir(), 'logs')
+const NATIVE_CRASH_DUMPS_DIR = join(getDataDir(), 'crash-dumps')
 const MAX_PAYLOAD_CHARS = 20_000
 const MAX_OBJECT_KEYS = 80
 const MAX_ARRAY_ITEMS = 50
 const MAX_DEPTH = 4
 
 type JsonRecord = Record<string, unknown>
+
+let nativeCrashReporterStarted = false
 
 function ensureLogDir(): void {
   mkdirSync(LOG_DIR, { recursive: true })
@@ -124,4 +127,46 @@ export function writeCrashLog(event: string, payload?: unknown): void {
 
 export function getCrashLogDir(): string {
   return LOG_DIR
+}
+
+export function getNativeCrashDumpsDir(): string {
+  return NATIVE_CRASH_DUMPS_DIR
+}
+
+export function startNativeCrashReporter(): void {
+  if (nativeCrashReporterStarted) return
+
+  let configuredCrashDumpsDir: string | null = null
+
+  try {
+    mkdirSync(NATIVE_CRASH_DUMPS_DIR, { recursive: true })
+    app.setPath('crashDumps', NATIVE_CRASH_DUMPS_DIR)
+    configuredCrashDumpsDir = NATIVE_CRASH_DUMPS_DIR
+  } catch (error) {
+    writeCrashLog('native_crash_dump_path_failed', { error })
+  }
+
+  try {
+    crashReporter.start({
+      productName: 'OpenCoWork',
+      companyName: 'OpenCoWork',
+      uploadToServer: false,
+      ignoreSystemCrashHandler: false,
+      globalExtra: {
+        platform: process.platform,
+        arch: process.arch,
+        packaged: String(app.isPackaged),
+        electron: process.versions.electron ?? '',
+        chrome: process.versions.chrome ?? '',
+        node: process.versions.node ?? ''
+      }
+    })
+    nativeCrashReporterStarted = true
+    writeCrashLog('native_crash_reporter_started', {
+      crashDumpsDir: configuredCrashDumpsDir ?? app.getPath('crashDumps'),
+      uploadToServer: false
+    })
+  } catch (error) {
+    writeCrashLog('native_crash_reporter_start_failed', { error })
+  }
 }

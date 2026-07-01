@@ -20,7 +20,10 @@ internal static class SshOpenSsh
         int timeoutMs,
         byte[]? stdinBytes = null,
         int maxStdoutChars = DefaultMaxStdoutChars,
-        int maxStderrChars = DefaultMaxStderrChars)
+        int maxStderrChars = DefaultMaxStderrChars,
+        Func<string, ValueTask>? stdoutChunkAsync = null,
+        Func<string, ValueTask>? stderrChunkAsync = null,
+        CancellationToken cancellationToken = default)
     {
         var connection = ResolveConnectionElement(parameters, "connection");
         return await ExecuteWithConnectionAsync(
@@ -30,7 +33,10 @@ internal static class SshOpenSsh
             timeoutMs,
             stdinBytes,
             maxStdoutChars,
-            maxStderrChars);
+            maxStderrChars,
+            stdoutChunkAsync,
+            stderrChunkAsync,
+            cancellationToken);
     }
 
     public static async Task<SshCommandResult> ExecuteAsync(
@@ -40,7 +46,10 @@ internal static class SshOpenSsh
         int timeoutMs,
         byte[]? stdinBytes = null,
         int maxStdoutChars = DefaultMaxStdoutChars,
-        int maxStderrChars = DefaultMaxStderrChars)
+        int maxStderrChars = DefaultMaxStderrChars,
+        Func<string, ValueTask>? stdoutChunkAsync = null,
+        Func<string, ValueTask>? stderrChunkAsync = null,
+        CancellationToken cancellationToken = default)
     {
         var connection = ResolveConnectionElement(parameters, connectionPropertyName);
         return await ExecuteWithConnectionAsync(
@@ -50,7 +59,10 @@ internal static class SshOpenSsh
             timeoutMs,
             stdinBytes,
             maxStdoutChars,
-            maxStderrChars);
+            maxStderrChars,
+            stdoutChunkAsync,
+            stderrChunkAsync,
+            cancellationToken);
     }
 
     private static async Task<SshCommandResult> ExecuteWithConnectionAsync(
@@ -60,7 +72,10 @@ internal static class SshOpenSsh
         int timeoutMs,
         byte[]? stdinBytes,
         int maxStdoutChars,
-        int maxStderrChars)
+        int maxStderrChars,
+        Func<string, ValueTask>? stdoutChunkAsync,
+        Func<string, ValueTask>? stderrChunkAsync,
+        CancellationToken cancellationToken)
     {
         var startedAt = Stopwatch.GetTimestamp();
         var stdout = new OutputCollector(maxStdoutChars);
@@ -79,15 +94,23 @@ internal static class SshOpenSsh
         process.Start();
         var spawnMs = ElapsedMs(spawnStartedAt);
 
-        var stdoutTask = ReadStreamAsync(process.StandardOutput, stdout);
-        var stderrTask = ReadStreamAsync(process.StandardError, stderr);
+        var stdoutTask = ReadStreamAsync(
+            process.StandardOutput,
+            stdout,
+            stdoutChunkAsync,
+            cancellationToken);
+        var stderrTask = ReadStreamAsync(
+            process.StandardError,
+            stderr,
+            stderrChunkAsync,
+            cancellationToken);
         var stdinTask = stdinBytes is null
             ? Task.CompletedTask
             : WriteStdinAsync(process, stdinBytes);
 
         using var timeoutCts = new CancellationTokenSource();
         var timeoutTask = Task.Delay(normalizedTimeoutMs, timeoutCts.Token);
-        var exitTask = process.WaitForExitAsync();
+        var exitTask = process.WaitForExitAsync(cancellationToken);
         var timedOut = await Task.WhenAny(exitTask, timeoutTask) == timeoutTask;
 
         if (timedOut)
@@ -98,7 +121,16 @@ internal static class SshOpenSsh
         else
         {
             await timeoutCts.CancelAsync();
-            await exitTask;
+            try
+            {
+                await exitTask;
+            }
+            catch (OperationCanceledException)
+            {
+                KillProcess(process);
+                await process.WaitForExitAsync(CancellationToken.None);
+                throw;
+            }
         }
 
         await Task.WhenAll(stdoutTask, stderrTask, stdinTask);
@@ -896,18 +928,36 @@ internal static class SshOpenSsh
         }
     }
 
-    private static async Task ReadStreamAsync(StreamReader reader, OutputCollector collector)
+    private static async Task ReadStreamAsync(
+        StreamReader reader,
+        OutputCollector collector,
+        Func<string, ValueTask>? chunkAsync = null,
+        CancellationToken cancellationToken = default)
     {
         var buffer = new char[4096];
         while (true)
         {
-            var read = await reader.ReadAsync(buffer.AsMemory());
+            int read;
+            try
+            {
+                read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
             if (read <= 0)
             {
                 break;
             }
 
-            collector.Append(new string(buffer, 0, read));
+            var chunk = new string(buffer, 0, read);
+            collector.Append(chunk);
+            if (chunkAsync is not null)
+            {
+                await chunkAsync(chunk);
+            }
         }
     }
 

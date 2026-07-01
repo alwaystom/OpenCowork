@@ -16,11 +16,14 @@ import {
   DB_MESSAGES_CLEAR_MSGPACK_CHANNEL,
   DB_MESSAGES_COUNT_MSGPACK_CHANNEL,
   DB_MESSAGES_DELETE_MSGPACK_CHANNEL,
+  DB_MESSAGES_INSERT_ARTIFACTS_MSGPACK_CHANNEL,
   DB_MESSAGES_LIST_MSGPACK_CHANNEL,
   DB_MESSAGES_LIST_PAGE_MSGPACK_CHANNEL,
+  DB_MESSAGES_REQUEST_CONTEXT_MSGPACK_CHANNEL,
   DB_MESSAGES_REPLACE_MSGPACK_CHANNEL,
   DB_MESSAGES_TRUNCATE_FROM_MSGPACK_CHANNEL,
   DB_MESSAGES_UPSERT_MSGPACK_CHANNEL,
+  DB_MESSAGES_WINDOW_AROUND_MSGPACK_CHANNEL,
   DB_PROJECTS_CREATE_MSGPACK_CHANNEL,
   DB_PROJECTS_DELETE_MSGPACK_CHANNEL,
   DB_PROJECTS_ENSURE_DEFAULT_MSGPACK_CHANNEL,
@@ -713,6 +716,81 @@ function dbListMessagesPage(args: {
   return invokeMessagePackBinary<MessageRow[]>(DB_MESSAGES_LIST_PAGE_MSGPACK_CHANNEL, args)
 }
 
+function dbListMessagesRequestContext(args: {
+  sessionId: string
+  maxMessages: number
+  headLimit?: number
+}): Promise<MessageRow[]> {
+  return invokeMessagePackBinary<MessageRow[]>(DB_MESSAGES_REQUEST_CONTEXT_MSGPACK_CHANNEL, args)
+}
+
+function dbListMessagesWindowAround(args: {
+  sessionId: string
+  messageId?: string | null
+  sortOrder?: number | null
+  limit: number
+}): Promise<MessageWindowResult> {
+  return invokeMessagePackBinary<MessageWindowResult>(
+    DB_MESSAGES_WINDOW_AROUND_MSGPACK_CHANNEL,
+    args
+  )
+}
+
+async function dbInsertCompactArtifacts(
+  sessionId: string,
+  artifacts: UnifiedMessage[],
+  options: {
+    insertBeforeMessageId?: string | null
+    insertSortOrder: number
+  }
+): Promise<MessageInsertArtifactsResult> {
+  const generation = getMessageWriteGeneration(sessionId)
+  let result: MessageInsertArtifactsResult | null = null
+  const artifactIds = artifacts.map((artifact) => artifact.id)
+
+  if (options.insertBeforeMessageId) {
+    flushPendingMessageUpsert(sessionId, options.insertBeforeMessageId)
+  }
+  for (const artifactId of artifactIds) {
+    clearPendingMessageUpsert(sessionId, artifactId)
+  }
+
+  const pending = enqueueSessionMessageWrite(
+    sessionId,
+    async () => {
+      result = await invokeMessagePack<MessageInsertArtifactsResult>(
+        DB_MESSAGES_INSERT_ARTIFACTS_MSGPACK_CHANNEL,
+        {
+          sessionId,
+          insertBeforeMessageId: options.insertBeforeMessageId ?? null,
+          insertSortOrder: Math.max(0, Math.floor(options.insertSortOrder)),
+          messages: artifacts.map((msg, index) => ({
+            id: msg.id,
+            role: msg.role,
+            content: JSON.stringify(sanitizeMessageContentForPersistence(msg.content)),
+            meta: msg.meta ? JSON.stringify(msg.meta) : null,
+            createdAt: msg.createdAt,
+            usage: msg.usage ? JSON.stringify(msg.usage) : null,
+            sortOrder: Math.max(0, Math.floor(options.insertSortOrder)) + index
+          }))
+        }
+      )
+    },
+    generation
+  )
+  trackPendingMessageWrite(artifactIds, pending)
+  await pending
+
+  const resolvedResult = result as MessageInsertArtifactsResult | null
+  if (!resolvedResult) {
+    throw new Error('Compact artifact insert was skipped by a newer message rewrite')
+  }
+  if (!resolvedResult.success) {
+    throw new Error(resolvedResult.error || 'Compact artifact insert failed')
+  }
+  return resolvedResult
+}
+
 // --- Debounced message persistence for streaming ---
 
 const _pendingFlush = new Map<string, ReturnType<typeof setTimeout>>()
@@ -1224,8 +1302,22 @@ interface ChatStore {
   loadFromDb: () => Promise<void>
   loadRecentSessionMessages: (sessionId: string, force?: boolean, limit?: number) => Promise<void>
   loadOlderSessionMessages: (sessionId: string, limit?: number) => Promise<number>
+  loadMessageWindowAround: (
+    sessionId: string,
+    anchor: { messageId?: string | null; sortOrder?: number | null },
+    limit?: number
+  ) => Promise<void>
   loadSessionMessages: (sessionId: string, force?: boolean) => Promise<void>
   loadWindowSessionMessages: (sessionId: string, offset: number, limit: number) => Promise<void>
+  insertCompactArtifacts: (
+    sessionId: string,
+    artifacts: UnifiedMessage[],
+    options?: {
+      insertBeforeMessageId?: string | null
+      insertSortOrder?: number | null
+      insertAtEnd?: boolean
+    }
+  ) => Promise<boolean>
   getSessionMessagesForRequest: (
     sessionId: string,
     options?: {
@@ -1355,6 +1447,7 @@ interface ChatStore {
   getSessionMessages: (sessionId: string) => UnifiedMessage[]
   recoverFromRendererOom: (sessionId?: string | null) => Promise<void>
   releaseDormantSessions: () => void
+  trimResidentMessageWindows: () => void
   scheduleSessionMaintenance: () => void
 }
 
@@ -1400,18 +1493,38 @@ interface MessageRow {
   sort_order: number
 }
 
+interface MessageWindowResult {
+  success: boolean
+  rows: MessageRow[]
+  start: number
+  end: number
+  total: number
+  anchorSortOrder: number
+  error?: string | null
+}
+
+interface MessageInsertArtifactsResult {
+  success: boolean
+  inserted: number
+  start: number
+  end: number
+  total: number
+  error?: string | null
+}
+
 type SyncedSessionRow = SessionRow
 
 // Initial tail shown the instant the user switches into a session. Small on
 // purpose so the switch renders in ~1 frame. Older history streams in via
 // the scroll-to-top load-more row.
-const INITIAL_SESSION_DISPLAY_PAGE_SIZE = 20
+const INITIAL_SESSION_DISPLAY_PAGE_SIZE = 30
 // Page size used when the user scrolls up past the top of the resident window.
-const RECENT_SESSION_MESSAGE_PAGE_SIZE = 40
+const RECENT_SESSION_MESSAGE_PAGE_SIZE = 30
 const MIN_INITIAL_SESSION_MESSAGE_PAGE_SIZE = 5
-const MESSAGE_WINDOW_MAX_SIZE = 240
-const MESSAGE_WINDOW_TAIL_PRESERVE = 80
+const MESSAGE_WINDOW_MAX_SIZE = 120
+const MESSAGE_WINDOW_TAIL_PRESERVE = 60
 const REQUEST_CONTEXT_MAX_MESSAGES = 160
+const REQUEST_CONTEXT_HEAD_MESSAGES = 12
 const REQUEST_CONTEXT_SAFE_BOUNDARY_SCAN = 12
 
 function normalizeSessionModelSelectionMode(
@@ -1584,14 +1697,33 @@ function cloneMessagesForNewSession(messages: UnifiedMessage[]): UnifiedMessage[
   })
 }
 
-function trimSessionMessageWindow(session: Session): void {
+function trimSessionMessageWindow(session: Session, preserve: 'head' | 'tail' = 'tail'): void {
   if (session.messages.length <= MESSAGE_WINDOW_MAX_SIZE) return
   const removableCount = session.messages.length - MESSAGE_WINDOW_MAX_SIZE
+
+  if (preserve === 'head') {
+    const trimCount = Math.min(removableCount, session.messages.length)
+    if (trimCount <= 0) return
+    session.messages.splice(session.messages.length - trimCount, trimCount)
+    session.loadedRangeEnd = Math.max(session.loadedRangeStart, session.loadedRangeEnd - trimCount)
+    return
+  }
+
   const maxRemovable = Math.max(0, session.messages.length - MESSAGE_WINDOW_TAIL_PRESERVE)
   const trimCount = Math.min(removableCount, maxRemovable)
   if (trimCount <= 0) return
   session.messages.splice(0, trimCount)
   session.loadedRangeStart = Math.min(session.messageCount, session.loadedRangeStart + trimCount)
+}
+
+function getMessageWindowPreserveMode(
+  session: Session,
+  fallback: 'head' | 'tail'
+): 'head' | 'tail' {
+  const status = useAgentStore.getState().runningSessions[session.id]
+  if (status === 'running' || status === 'retrying') return 'tail'
+  if (session.messages.some((message) => hasPendingLocalMessageWrite(message.id))) return 'tail'
+  return fallback
 }
 
 function backfillStreamingMessage(
@@ -1788,6 +1920,35 @@ function clampRequestContext(
   return messages.slice(boundary)
 }
 
+function clampWindowedRequestContext(
+  messages: UnifiedMessage[],
+  maxMessagesArg?: number | null
+): UnifiedMessage[] {
+  const maxMessages = normalizeRequestContextMaxMessages(maxMessagesArg)
+  if (maxMessages === null || messages.length <= maxMessages) return messages
+
+  const headCount = Math.min(
+    REQUEST_CONTEXT_HEAD_MESSAGES,
+    Math.max(0, Math.floor(maxMessages / 4))
+  )
+  const selectedIds = new Set<string>()
+  for (const message of messages.slice(0, headCount)) {
+    selectedIds.add(message.id)
+  }
+  for (const message of messages) {
+    if (isCompactArtifactMessage(message)) {
+      selectedIds.add(message.id)
+    }
+  }
+
+  const tailBudget = Math.max(1, maxMessages - selectedIds.size)
+  for (const message of messages.slice(-tailBudget)) {
+    selectedIds.add(message.id)
+  }
+
+  return messages.filter((message) => selectedIds.has(message.id))
+}
+
 function isUiOnlyRequestMessage(message: UnifiedMessage): boolean {
   if (message.role !== 'system') return false
   if (message.meta?.compressionStatus) return true
@@ -1917,6 +2078,78 @@ function mergeResidentTailWithFetchedPrefix(
   return clampRequestContext(merged, maxMessagesArg)
 }
 
+function mergeRequestContextRowsWithResident(
+  session: Session,
+  fetchedRows: MessageRow[],
+  knownCount: number,
+  maxMessagesArg?: number | null
+): UnifiedMessage[] {
+  const maxMessages = normalizeRequestContextMaxMessages(maxMessagesArg)
+  const residentMessages = session.messages
+  const residentStart =
+    session.messagesLoaded && residentMessages.length > 0
+      ? Math.max(
+          0,
+          Math.min(session.loadedRangeStart, session.loadedRangeEnd - residentMessages.length)
+        )
+      : knownCount
+  const requestTailFloor = maxMessages === null ? 0 : Math.max(0, knownCount - maxMessages)
+  const entriesById = new Map<
+    string,
+    { index: number; sequence: number; message: UnifiedMessage }
+  >()
+
+  fetchedRows.forEach((row, sequence) => {
+    entriesById.set(row.id, {
+      index: row.sort_order,
+      sequence,
+      message: rowToMessage(row)
+    })
+  })
+
+  residentMessages.forEach((resident, index) => {
+    const logicalIndex = Math.max(0, residentStart + index)
+    const existing = entriesById.get(resident.id)
+    if (existing) {
+      const fetched = existing.message
+      const message =
+        shouldPreferResidentMessage(resident, fetched) || hasPendingLocalMessageWrite(resident.id)
+          ? resident
+          : resident.usage || fetched.usage
+            ? {
+                ...fetched,
+                usage: mergeUsageSnapshot(resident.usage, fetched.usage)
+              }
+            : fetched
+      entriesById.set(resident.id, {
+        index: existing.index,
+        sequence: existing.sequence,
+        message
+      })
+      return
+    }
+
+    const shouldIncludeResident =
+      maxMessages === null ||
+      hasPendingLocalMessageWrite(resident.id) ||
+      isCompactArtifactMessage(resident) ||
+      logicalIndex >= requestTailFloor
+    if (!shouldIncludeResident) return
+
+    entriesById.set(resident.id, {
+      index: logicalIndex,
+      sequence: fetchedRows.length + index,
+      message: resident
+    })
+  })
+
+  const messages = [...entriesById.values()]
+    .sort((left, right) => left.index - right.index || left.sequence - right.sequence)
+    .map((entry) => entry.message)
+
+  return clampWindowedRequestContext(messages, maxMessages)
+}
+
 async function loadRequestContextMessages(
   session: Session,
   maxMessagesArg?: number | null
@@ -1926,13 +2159,6 @@ async function loadRequestContextMessages(
   const maxMessages = normalizeRequestContextMaxMessages(maxMessagesArg)
 
   const residentMessages = session.messages
-  const residentHasFullHistory =
-    session.messagesLoaded && session.loadedRangeStart === 0 && session.loadedRangeEnd >= knownCount
-
-  if (residentHasFullHistory) {
-    return clampRequestContext(residentMessages, maxMessages)
-  }
-
   if (maxMessages === null) {
     const msgRows = await dbListMessagesPage({
       sessionId: session.id,
@@ -1941,6 +2167,28 @@ async function loadRequestContextMessages(
     })
     const fetchedMessages = msgRows.map(rowToMessage)
     return mergeResidentTailWithFetchedPrefix(residentMessages, fetchedMessages, maxMessages)
+  }
+
+  try {
+    const requestRows = await dbListMessagesRequestContext({
+      sessionId: session.id,
+      maxMessages,
+      headLimit: REQUEST_CONTEXT_HEAD_MESSAGES
+    })
+    if (requestRows.length > 0) {
+      return mergeRequestContextRowsWithResident(session, requestRows, knownCount, maxMessages)
+    }
+  } catch (error) {
+    console.warn('[ChatStore] Failed to load request context window:', error)
+  }
+
+  if (
+    session.messagesLoaded &&
+    residentMessages.length > 0 &&
+    session.loadedRangeStart === 0 &&
+    session.loadedRangeEnd >= knownCount
+  ) {
+    return clampWindowedRequestContext(residentMessages, maxMessages)
   }
 
   const residentTailStart =
@@ -2650,7 +2898,7 @@ export const useChatStore = create<ChatStore>()(
       const requestedLimit = Math.max(
         MIN_INITIAL_SESSION_MESSAGE_PAGE_SIZE,
         Math.min(
-          limit ?? MIN_INITIAL_SESSION_MESSAGE_PAGE_SIZE,
+          limit ?? INITIAL_SESSION_DISPLAY_PAGE_SIZE,
           knownCount || MIN_INITIAL_SESSION_MESSAGE_PAGE_SIZE
         )
       )
@@ -2756,6 +3004,7 @@ export const useChatStore = create<ChatStore>()(
           target.loadedRangeStart = merged.loadedRangeStart
           target.loadedRangeEnd = merged.loadedRangeEnd
           target.lastKnownMessageCount = merged.messageCount
+          trimSessionMessageWindow(target, 'tail')
         })
       } catch (err) {
         console.error('[ChatStore] Failed to load recent session messages:', err)
@@ -2812,12 +3061,183 @@ export const useChatStore = create<ChatStore>()(
           target.loadedRangeStart = offset
           target.loadedRangeEnd = Math.max(target.loadedRangeEnd, offset + target.messages.length)
           target.lastKnownMessageCount = target.messageCount
+          trimSessionMessageWindow(target, getMessageWindowPreserveMode(target, 'head'))
         })
         return olderMessages.length
       } catch (err) {
         console.error('[ChatStore] Failed to load older session messages:', err)
         return 0
       }
+    },
+
+    loadMessageWindowAround: async (
+      sessionId,
+      anchor,
+      limit = INITIAL_SESSION_DISPLAY_PAGE_SIZE
+    ) => {
+      const session = get().sessions.find((s) => s.id === sessionId)
+      if (!session) return
+      const safeLimit = Math.max(
+        MIN_INITIAL_SESSION_MESSAGE_PAGE_SIZE,
+        Math.min(MESSAGE_WINDOW_MAX_SIZE, Math.floor(limit))
+      )
+      try {
+        const result = await dbListMessagesWindowAround({
+          sessionId,
+          messageId: anchor.messageId,
+          sortOrder: anchor.sortOrder,
+          limit: safeLimit
+        })
+        if (!result.success) {
+          throw new Error(result.error || 'Failed to load message window')
+        }
+
+        const messages = result.rows.map(rowToMessage)
+        const messageSortOrders = result.rows.map((row) => row.sort_order)
+        set((state) => {
+          const target = state.sessions.find((s) => s.id === sessionId)
+          if (!target) return
+          const merged = mergeLoadedMessagesWithResident(
+            target,
+            messages,
+            result.start,
+            result.end,
+            result.total,
+            messageSortOrders
+          )
+          target.messages = merged.messages
+          target.messagesLoaded = true
+          target.messageCount = result.total
+          target.loadedRangeStart = merged.loadedRangeStart
+          target.loadedRangeEnd = merged.loadedRangeEnd
+          target.lastKnownMessageCount = result.total
+          trimSessionMessageWindow(
+            target,
+            getMessageWindowPreserveMode(
+              target,
+              result.end >= result.total - MESSAGE_WINDOW_TAIL_PRESERVE ? 'tail' : 'head'
+            )
+          )
+        })
+      } catch (err) {
+        console.error('[ChatStore] Failed to load message window:', err)
+      }
+    },
+
+    insertCompactArtifacts: async (sessionId, artifacts, options) => {
+      const artifactMessages = artifacts.filter(isCompactArtifactMessage)
+      if (artifactMessages.length === 0) return false
+
+      const session = get().sessions.find((s) => s.id === sessionId)
+      if (!session) return false
+
+      const insertBeforeMessageId = options?.insertBeforeMessageId ?? null
+      const insertBeforeIndex = insertBeforeMessageId
+        ? session.messages.findIndex((message) => message.id === insertBeforeMessageId)
+        : -1
+      const fallbackInsertSortOrder =
+        typeof options?.insertSortOrder === 'number' && Number.isFinite(options.insertSortOrder)
+          ? options.insertSortOrder
+          : options?.insertAtEnd
+            ? session.messageCount
+            : insertBeforeIndex >= 0
+              ? session.loadedRangeStart + insertBeforeIndex
+              : session.loadedRangeEnd
+
+      let result: MessageInsertArtifactsResult
+      try {
+        result = await dbInsertCompactArtifacts(sessionId, artifactMessages, {
+          insertBeforeMessageId,
+          insertSortOrder: fallbackInsertSortOrder
+        })
+      } catch (err) {
+        console.error('[ChatStore] Failed to insert compact artifacts:', err)
+        return false
+      }
+
+      const now = Date.now()
+      const removedArtifactIds: string[] = []
+      const insertedArtifactIds = artifactMessages.map((artifact) => artifact.id)
+
+      set((state) => {
+        const target = state.sessions.find((s) => s.id === sessionId)
+        if (!target) return
+
+        const oldMessageCount = target.messageCount
+        const wasLoadedAtTail = target.loadedRangeEnd >= oldMessageCount
+        const residentWithoutArtifacts: UnifiedMessage[] = []
+
+        for (const message of target.messages) {
+          if (isCompactArtifactMessage(message)) {
+            removedArtifactIds.push(message.id)
+            continue
+          }
+          residentWithoutArtifacts.push(message)
+        }
+
+        let residentInsertIndex = -1
+        if (insertBeforeMessageId) {
+          residentInsertIndex = residentWithoutArtifacts.findIndex(
+            (message) => message.id === insertBeforeMessageId
+          )
+        }
+        if (
+          residentInsertIndex < 0 &&
+          result.start >= target.loadedRangeStart &&
+          result.start <= target.loadedRangeEnd
+        ) {
+          residentInsertIndex = Math.min(
+            residentWithoutArtifacts.length,
+            Math.max(0, result.start - target.loadedRangeStart)
+          )
+        }
+        if (
+          residentInsertIndex < 0 &&
+          (options?.insertAtEnd ||
+            wasLoadedAtTail ||
+            result.end >= result.total - MESSAGE_WINDOW_TAIL_PRESERVE)
+        ) {
+          residentInsertIndex = residentWithoutArtifacts.length
+        }
+
+        const revisedArtifacts = artifactMessages.map((artifact) => ({
+          ...artifact,
+          _revision: (artifact._revision ?? 0) + 1
+        }))
+        target.messages =
+          residentInsertIndex >= 0
+            ? [
+                ...residentWithoutArtifacts.slice(0, residentInsertIndex),
+                ...revisedArtifacts,
+                ...residentWithoutArtifacts.slice(residentInsertIndex)
+              ]
+            : residentWithoutArtifacts
+        target.messagesLoaded = target.messages.length > 0 || result.total === 0
+        target.messageCount = result.total
+        if (wasLoadedAtTail || residentInsertIndex === residentWithoutArtifacts.length) {
+          target.loadedRangeEnd = result.total
+          target.loadedRangeStart = Math.max(0, result.total - target.messages.length)
+          trimSessionMessageWindow(target, 'tail')
+        } else {
+          target.loadedRangeStart = Math.min(target.loadedRangeStart, result.total)
+          target.loadedRangeEnd = Math.min(
+            result.total,
+            target.loadedRangeStart + target.messages.length
+          )
+          trimSessionMessageWindow(target, getMessageWindowPreserveMode(target, 'head'))
+        }
+        target.lastKnownMessageCount = result.total
+        target.updatedAt = now
+      })
+
+      const touchedArtifactIds = [...new Set([...removedArtifactIds, ...insertedArtifactIds])]
+      clearPendingMessageFlushes(touchedArtifactIds)
+      for (const messageId of touchedArtifactIds) {
+        clearPendingMessageUpsert(sessionId, messageId)
+        _streamingDirtyMessageIds.delete(messageId)
+      }
+      dbUpdateSession(sessionId, { updatedAt: now })
+      return true
     },
 
     loadSessionMessages: async (sessionId, force = false) => {
@@ -2906,6 +3326,7 @@ export const useChatStore = create<ChatStore>()(
           target.loadedRangeStart = merged.loadedRangeStart
           target.loadedRangeEnd = merged.loadedRangeEnd
           target.lastKnownMessageCount = merged.messageCount
+          trimSessionMessageWindow(target, 'tail')
         })
       } catch (err) {
         console.error('[ChatStore] Failed to load window session messages:', err)
@@ -4701,7 +5122,11 @@ export const useChatStore = create<ChatStore>()(
       usePlanStore.getState().releaseDormantPlans(targetSessionId ?? null)
 
       if (targetSessionId) {
-        await get().loadRecentSessionMessages(targetSessionId, true, 40)
+        await get().loadRecentSessionMessages(
+          targetSessionId,
+          true,
+          INITIAL_SESSION_DISPLAY_PAGE_SIZE
+        )
         await useTaskStore.getState().loadTasksForSession(targetSessionId)
         const planStore = usePlanStore.getState()
         const activePlan = await planStore.loadPlanForSession(targetSessionId)
@@ -4720,6 +5145,23 @@ export const useChatStore = create<ChatStore>()(
         state.streamingMessageId = state.activeSessionId
           ? (state.streamingMessages[state.activeSessionId] ?? null)
           : null
+      })
+    },
+
+    trimResidentMessageWindows: () => {
+      set((state) => {
+        for (const session of state.sessions) {
+          if (session.messages.length <= MESSAGE_WINDOW_MAX_SIZE) continue
+          trimSessionMessageWindow(
+            session,
+            getMessageWindowPreserveMode(
+              session,
+              session.loadedRangeEnd >= session.messageCount - MESSAGE_WINDOW_TAIL_PRESERVE
+                ? 'tail'
+                : 'head'
+            )
+          )
+        }
       })
     },
 

@@ -74,7 +74,12 @@ import { McpManager } from './mcp/mcp-manager'
 import { closeDb } from './db/database'
 import { cleanupExpiredUsageEvents } from './db/usage-events-dao'
 import { registerSshHandlers, closeAllSshSessions } from './ipc/ssh-handlers'
-import { writeCrashLog, getCrashLogDir } from './crash-logger'
+import {
+  writeCrashLog,
+  getCrashLogDir,
+  getNativeCrashDumpsDir,
+  startNativeCrashReporter
+} from './crash-logger'
 import { setupAutoUpdater } from './updater'
 import { safeSendMessagePackToWindow } from './window-ipc'
 import { registerMessagePackHandler } from './ipc/messagepack-handler'
@@ -408,6 +413,42 @@ async function handleImageFetchBase64(
 
 function recordCrash(event: string, details: unknown): void {
   writeCrashLog(event, details)
+}
+
+function recordStartupStep(
+  step: string,
+  phase: 'start' | 'success' | 'failure',
+  details?: unknown
+): void {
+  recordCrash('main_startup_step', {
+    step,
+    phase,
+    ...(details === undefined ? {} : { details })
+  })
+}
+
+function runLoggedStartupStep<T>(step: string, task: () => T): T {
+  recordStartupStep(step, 'start')
+  try {
+    const result = task()
+    recordStartupStep(step, 'success')
+    return result
+  } catch (error) {
+    recordStartupStep(step, 'failure', { error })
+    throw error
+  }
+}
+
+async function runLoggedStartupStepAsync<T>(step: string, task: () => Promise<T>): Promise<T> {
+  recordStartupStep(step, 'start')
+  try {
+    const result = await task()
+    recordStartupStep(step, 'success')
+    return result
+  } catch (error) {
+    recordStartupStep(step, 'failure', { error })
+    throw error
+  }
 }
 
 function getWindowDiagnosticContext(window: BrowserWindow): Record<string, unknown> {
@@ -1154,17 +1195,21 @@ app.on('before-quit', () => {
   void stopNativeWorker()
 })
 
-configureChromiumCachePaths()
-configureRendererHeapLimit()
+startNativeCrashReporter()
+runLoggedStartupStep('configure_chromium_cache_paths', configureChromiumCachePaths)
+runLoggedStartupStep('configure_renderer_heap_limit', configureRendererHeapLimit)
 
 // 防止dev环境和生产环境冲突，导致无法启动
-if (!app.isPackaged) {
-  app.setName('OpenCoWork-dev')
-} else {
-  app.setName('OpenCoWork')
-}
+runLoggedStartupStep('set_app_name', () => {
+  if (!app.isPackaged) {
+    app.setName('OpenCoWork-dev')
+  } else {
+    app.setName('OpenCoWork')
+  }
+})
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
+recordStartupStep('request_single_instance_lock', gotSingleInstanceLock ? 'success' : 'failure')
 if (!gotSingleInstanceLock) {
   app.quit()
 }
@@ -1180,16 +1225,22 @@ if (gotSingleInstanceLock) {
   })
 
   app.whenReady().then(async () => {
+    recordStartupStep('app_when_ready', 'start')
     // Import @electron-toolkit/utils after app is ready
-    const utils = await import('@electron-toolkit/utils')
+    const utils = await runLoggedStartupStepAsync(
+      'import_electron_toolkit_utils',
+      () => import('@electron-toolkit/utils')
+    )
     electronApp = utils.electronApp
     optimizer = utils.optimizer
     is = utils.is
 
-    await syncMacOSShellEnvironment()
+    await runLoggedStartupStepAsync('sync_macos_shell_environment', syncMacOSShellEnvironment)
     try {
-      await getNativeWorker().ensureStarted()
-      await initializeSettingsCache()
+      await runLoggedStartupStepAsync('native_worker_settings_startup', async () => {
+        await getNativeWorker().ensureStarted()
+        await initializeSettingsCache()
+      })
       console.log('[NativeWorker] settings startup ready')
     } catch (error) {
       console.warn(
@@ -1198,18 +1249,25 @@ if (gotSingleInstanceLock) {
         }`
       )
     }
-    await configureSystemProxy()
-    const browserEmulationStatus = configureBuiltInBrowserSession()
+    await runLoggedStartupStepAsync('configure_system_proxy', configureSystemProxy)
+    const browserEmulationStatus = runLoggedStartupStep(
+      'configure_builtin_browser_session',
+      configureBuiltInBrowserSession
+    )
 
     recordCrash('app_started', {
       userDataPath: app.getPath('userData'),
       crashLogDir: getCrashLogDir(),
+      nativeCrashDumpsDir: getNativeCrashDumpsDir(),
       browserEmulation: browserEmulationStatus
     })
     console.log(`[CrashLogger] Logs will be written to ${getCrashLogDir()}`)
+    console.log(`[CrashLogger] Native crash dumps will be written to ${getNativeCrashDumpsDir()}`)
 
     // Set app identity for Windows integration
-    electronApp.setAppUserModelId('com.opencowork.app')
+    runLoggedStartupStep('set_app_user_model_id', () => {
+      electronApp.setAppUserModelId('com.opencowork.app')
+    })
 
     // Default open or close DevTools by F12 in development
 
@@ -1223,6 +1281,11 @@ if (gotSingleInstanceLock) {
     })
 
     registerMessagePackHandler<void>('app:homedir', () => homedir())
+    registerMessagePackHandler<void>('app:global-memory-home', () => {
+      const rootPath = join(homedir(), '.open-cowork')
+      mkdirSync(join(rootPath, 'memory'), { recursive: true })
+      return rootPath
+    })
     registerMessagePackHandler<void>('app:system-info', () => ({
       machineName: hostname(),
       platform: process.platform,
@@ -1251,7 +1314,9 @@ if (gotSingleInstanceLock) {
     registerTerminalHandlers()
 
     try {
-      await getNativeWorker().ensureStarted()
+      await runLoggedStartupStepAsync('native_worker_startup', () =>
+        getNativeWorker().ensureStarted()
+      )
       console.log('[NativeWorker] startup ready')
     } catch (error) {
       console.warn(
@@ -1259,16 +1324,18 @@ if (gotSingleInstanceLock) {
       )
     }
 
-    await registerDbHandlers({
-      onSessionDeleted: (sessionId) => {
-        closeDetachedSessionWindow(sessionId)
-      }
-    })
+    await runLoggedStartupStepAsync('register_db_handlers', () =>
+      registerDbHandlers({
+        onSessionDeleted: (sessionId) => {
+          closeDetachedSessionWindow(sessionId)
+        }
+      })
+    )
     registerGoalRuntimeHandlers()
     registerMemoryAutomationHandlers()
     registerConfigHandlers()
     registerExtensionHandlers()
-    await registerSshHandlers()
+    await runLoggedStartupStepAsync('register_ssh_handlers', registerSshHandlers)
     registerChannelHandlers(channelManager)
     registerMcpHandlers(mcpManager)
     registerCronHandlers()
@@ -1279,7 +1346,9 @@ if (gotSingleInstanceLock) {
     registerTeamRuntimeHandlers()
 
     try {
-      const sidecarReady = await getSidecarManager().ensureStarted()
+      const sidecarReady = await runLoggedStartupStepAsync('sidecar_global_startup', () =>
+        getSidecarManager().ensureStarted()
+      )
       console.log(`[Sidecar] global startup ${sidecarReady ? 'ready' : 'unavailable'}`)
     } catch (error) {
       console.warn(
@@ -1287,7 +1356,7 @@ if (gotSingleInstanceLock) {
       )
     }
 
-    await loadPersistedJobs()
+    await runLoggedStartupStepAsync('load_persisted_jobs', loadPersistedJobs)
     registerNotifyHandlers()
     registerWebSearchHandlers()
     registerBrowserHandlers()
@@ -1375,7 +1444,7 @@ if (gotSingleInstanceLock) {
     void autoConnectMcpServers(mcpManager)
 
     setMacDockIcon()
-    createWindow()
+    runLoggedStartupStep('create_main_window', createWindow)
     scheduleUsageEventsStartupCleanup()
 
     createTray()
@@ -1386,6 +1455,8 @@ if (gotSingleInstanceLock) {
         isQuiting = true
       }
     })
+
+    recordStartupStep('app_when_ready', 'success')
 
     app.on('activate', function () {
       // On macOS it's common to re-create a window in the app when the

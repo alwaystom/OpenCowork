@@ -534,6 +534,8 @@ internal static class AgentRuntimeNativeToolExecutor
                 var sshContent = await AgentRuntimeSshToolExecutor.ExecuteAsync(
                     call,
                     parameters,
+                    state,
+                    context,
                     cancellationToken);
                 return new RendererToolResult(CreateStringElement(sshContent), false, null);
             }
@@ -547,7 +549,12 @@ internal static class AgentRuntimeNativeToolExecutor
                 "LS" => ExecuteLs(call.Input, parameters),
                 "Glob" => ExecuteGlob(call.Input, parameters),
                 "Grep" => await GrepAsync(call.Input, parameters, cancellationToken),
-                "Bash" or "Shell" => await ExecuteShellAsync(call.Input, parameters, cancellationToken),
+                "Bash" or "Shell" => await ExecuteShellAsync(
+                    call,
+                    parameters,
+                    state,
+                    context,
+                    cancellationToken),
                 _ => throw new InvalidOperationException($"Native tool not registered: {call.Name}")
             };
             return new RendererToolResult(CreateStringElement(content), false, null);
@@ -875,10 +882,13 @@ internal static class AgentRuntimeNativeToolExecutor
     }
 
     private static async Task<string> ExecuteShellAsync(
-        JsonElement input,
+        NativeToolCallView call,
         JsonElement parameters,
+        AgentRuntimeTools.AgentRuntimeRunState state,
+        WorkerRequestContext context,
         CancellationToken cancellationToken)
     {
+        var input = call.Input;
         var command = JsonHelpers.GetString(input, "command");
         if (string.IsNullOrWhiteSpace(command))
         {
@@ -890,6 +900,7 @@ internal static class AgentRuntimeNativeToolExecutor
         }
 
         var cwd = ResolveWorkingFolder(parameters);
+        var liveInput = BuildShellInputElement(input, cwd, command);
         var timeoutMs = Math.Clamp(
             JsonHelpers.GetInt(input, "timeout", ShellDefaultTimeoutMs),
             1,
@@ -902,8 +913,60 @@ internal static class AgentRuntimeNativeToolExecutor
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             timeoutCts.Token);
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(linkedCts.Token);
-        var stderrTask = process.StandardError.ReadToEndAsync(linkedCts.Token);
+        var stdout = new ShellOutputCollector(ShellMaxOutputChars);
+        var stderr = new ShellOutputCollector(ShellMaxOutputChars);
+        var combinedOutput = new ShellOutputCollector(ShellMaxOutputChars);
+        var outputLock = new object();
+        using var emitLock = new SemaphoreSlim(1, 1);
+
+        async Task EmitLiveUpdateAsync()
+        {
+            await emitLock.WaitAsync(CancellationToken.None);
+            try
+            {
+                string stdoutSnapshot;
+                string stderrSnapshot;
+                string combinedSnapshot;
+                lock (outputLock)
+                {
+                    stdoutSnapshot = stdout.ToString();
+                    stderrSnapshot = stderr.ToString();
+                    combinedSnapshot = combinedOutput.ToString();
+                }
+
+                await EmitShellToolUpdateAsync(
+                    call,
+                    liveInput,
+                    stdoutSnapshot,
+                    stderrSnapshot,
+                    combinedSnapshot,
+                    cwd,
+                    command,
+                    state,
+                    context);
+            }
+            finally
+            {
+                emitLock.Release();
+            }
+        }
+
+        await EmitLiveUpdateAsync();
+
+        var stdoutTask = ReadShellStreamAsync(
+            process.StandardOutput,
+            stdout,
+            combinedOutput,
+            outputLock,
+            EmitLiveUpdateAsync,
+            linkedCts.Token);
+        var stderrTask = ReadShellStreamAsync(
+            process.StandardError,
+            stderr,
+            combinedOutput,
+            outputLock,
+            EmitLiveUpdateAsync,
+            linkedCts.Token);
         var timedOut = false;
 
         try
@@ -920,18 +983,94 @@ internal static class AgentRuntimeNativeToolExecutor
             }
         }
 
-        var stdout = await CompleteOutputTaskAsync(stdoutTask);
-        var stderr = await CompleteOutputTaskAsync(stderrTask);
+        await CompleteShellReadTaskAsync(stdoutTask);
+        await CompleteShellReadTaskAsync(stderrTask);
         var exitCode = timedOut ? 124 : process.ExitCode;
+        await EmitLiveUpdateAsync();
         return EncodeJsonObject(writer =>
         {
             writer.WriteNumber("exitCode", exitCode);
-            writer.WriteString("stdout", Truncate(stdout, ShellMaxOutputChars));
-            writer.WriteString("stderr", Truncate(stderr, ShellMaxOutputChars));
+            writer.WriteString("stdout", stdout.ToString());
+            writer.WriteString("stderr", stderr.ToString());
+            writer.WriteString("output", combinedOutput.ToString());
             writer.WriteBoolean("timedOut", timedOut);
             writer.WriteString("cwd", cwd);
+            writer.WriteString("command", command);
             writer.WriteNumber("totalMs", ElapsedMs(startedAt));
         });
+    }
+
+    private static async Task EmitShellToolUpdateAsync(
+        NativeToolCallView call,
+        JsonElement input,
+        string stdout,
+        string stderr,
+        string output,
+        string cwd,
+        string command,
+        AgentRuntimeTools.AgentRuntimeRunState state,
+        WorkerRequestContext context)
+    {
+        var content = EncodeJsonObject(writer =>
+        {
+            writer.WriteString("stdout", stdout);
+            writer.WriteString("stderr", stderr);
+            writer.WriteString("output", output);
+            writer.WriteString("cwd", cwd);
+            writer.WriteString("command", command);
+        });
+
+        await AgentRuntimeTools.EmitAsync(
+            state,
+            context,
+            new AgentRuntimeStreamEvent(
+                "tool_call_update",
+                ToolCall: new AgentRuntimeToolCallState(
+                    call.Id,
+                    call.Name,
+                    input,
+                    "running",
+                    CreateStringElement(content))));
+    }
+
+    private static async Task ReadShellStreamAsync(
+        StreamReader reader,
+        ShellOutputCollector streamOutput,
+        ShellOutputCollector combinedOutput,
+        object outputLock,
+        Func<Task> emitUpdateAsync,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new char[4096];
+        while (true)
+        {
+            int read;
+            try
+            {
+                read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (read <= 0)
+            {
+                return;
+            }
+
+            var chunk = new string(buffer, 0, read);
+            bool changed;
+            lock (outputLock)
+            {
+                changed = streamOutput.Append(chunk) | combinedOutput.Append(chunk);
+            }
+
+            if (changed)
+            {
+                await emitUpdateAsync();
+            }
+        }
     }
 
     private static Process CreateShellProcess(string command, string cwd)
@@ -963,15 +1102,41 @@ internal static class AgentRuntimeNativeToolExecutor
         return new Process { StartInfo = startInfo };
     }
 
-    private static async Task<string> CompleteOutputTaskAsync(Task<string> task)
+    private static JsonElement BuildShellInputElement(JsonElement input, string cwd, string command)
+    {
+        var json = EncodeJsonObject(writer =>
+        {
+            if (input.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in input.EnumerateObject())
+                {
+                    if (property.NameEquals("cwd"))
+                    {
+                        continue;
+                    }
+                    property.WriteTo(writer);
+                }
+            }
+            else
+            {
+                writer.WriteString("command", command);
+            }
+
+            writer.WriteString("cwd", cwd);
+        });
+
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    private static async Task CompleteShellReadTaskAsync(Task task)
     {
         try
         {
-            return await task;
+            await task;
         }
         catch (OperationCanceledException)
         {
-            return string.Empty;
         }
     }
 
@@ -1694,6 +1859,50 @@ internal static class AgentRuntimeNativeToolExecutor
     private static long ElapsedMs(long startedAt)
     {
         return (long)Math.Round(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
+    }
+
+    private sealed class ShellOutputCollector
+    {
+        private readonly int maxChars;
+        private readonly StringBuilder builder = new();
+        private bool truncated;
+
+        public ShellOutputCollector(int maxChars)
+        {
+            this.maxChars = maxChars;
+        }
+
+        public bool Append(string chunk)
+        {
+            if (truncated)
+            {
+                return false;
+            }
+
+            var remaining = maxChars - builder.Length;
+            if (remaining <= 0)
+            {
+                truncated = true;
+                return false;
+            }
+
+            if (chunk.Length <= remaining)
+            {
+                builder.Append(chunk);
+                return true;
+            }
+
+            builder.Append(chunk.AsSpan(0, remaining));
+            builder.AppendLine();
+            builder.Append("[Native shell output truncated]");
+            truncated = true;
+            return true;
+        }
+
+        public override string ToString()
+        {
+            return builder.ToString();
+        }
     }
 }
 

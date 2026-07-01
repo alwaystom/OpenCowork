@@ -29,14 +29,17 @@ import {
   DB_MESSAGES_CLEAR_MSGPACK_CHANNEL,
   DB_MESSAGES_COUNT_MSGPACK_CHANNEL,
   DB_MESSAGES_DELETE_MSGPACK_CHANNEL,
+  DB_MESSAGES_INSERT_ARTIFACTS_MSGPACK_CHANNEL,
   DB_MESSAGES_LIST_MSGPACK_CHANNEL,
   DB_MESSAGES_LIST_PAGE_MSGPACK_CHANNEL,
   DB_MESSAGES_LIST_USER_MSGPACK_CHANNEL,
+  DB_MESSAGES_REQUEST_CONTEXT_MSGPACK_CHANNEL,
   DB_MESSAGES_REPLACE_MSGPACK_CHANNEL,
   DB_MESSAGES_SEARCH_CONTENT_MSGPACK_CHANNEL,
   DB_MESSAGES_TRUNCATE_FROM_MSGPACK_CHANNEL,
   DB_MESSAGES_UPDATE_MSGPACK_CHANNEL,
   DB_MESSAGES_UPSERT_MSGPACK_CHANNEL,
+  DB_MESSAGES_WINDOW_AROUND_MSGPACK_CHANNEL,
   DB_PLANS_CREATE_MSGPACK_CHANNEL,
   DB_PLANS_DELETE_MSGPACK_CHANNEL,
   DB_PLANS_GET_BY_SESSION_MSGPACK_CHANNEL,
@@ -418,6 +421,25 @@ export async function registerDbHandlers(options: RegisterDbHandlersOptions = {}
     )
   })
 
+  ipcMain.handle(DB_MESSAGES_REQUEST_CONTEXT_MSGPACK_CHANNEL, async (_event, bytes: Uint8Array) => {
+    const args = decodeMessagePackPayload<{
+      sessionId: string
+      maxMessages: number
+      headLimit?: number
+    }>(bytes)
+    return encodeMessagePackPayload(await messagesDao.getMessagesRequestContext(args))
+  })
+
+  ipcMain.handle(DB_MESSAGES_WINDOW_AROUND_MSGPACK_CHANNEL, async (_event, bytes: Uint8Array) => {
+    const args = decodeMessagePackPayload<{
+      sessionId: string
+      messageId?: string | null
+      sortOrder?: number | null
+      limit: number
+    }>(bytes)
+    return encodeMessagePackPayload(await messagesDao.getMessagesWindowAround(args))
+  })
+
   ipcMain.handle(DB_MESSAGES_SEARCH_CONTENT_MSGPACK_CHANNEL, async (_event, bytes: Uint8Array) => {
     const args = decodeMessagePackPayload<{ query: string; limit?: number }>(bytes)
     return encodeMessagePackPayload(
@@ -428,6 +450,17 @@ export async function registerDbHandlers(options: RegisterDbHandlersOptions = {}
   ipcMain.handle(DB_MESSAGES_ADD_BATCH_MSGPACK_CHANNEL, async (_event, bytes: Uint8Array) => {
     return await addMessagesBatch(decodeMessagePackPayload<messagesDao.MessageInput[]>(bytes))
   })
+
+  ipcMain.handle(
+    DB_MESSAGES_INSERT_ARTIFACTS_MSGPACK_CHANNEL,
+    async (_event, bytes: Uint8Array) => {
+      const args =
+        decodeMessagePackPayload<Parameters<typeof messagesDao.insertMessageArtifacts>[0]>(bytes)
+      const result = await messagesDao.insertMessageArtifacts(args)
+      await emitSessionUpdated(args.sessionId, 'messages-artifacts-inserted')
+      return result
+    }
+  )
 
   ipcMain.handle(DB_MESSAGES_UPSERT_MSGPACK_CHANNEL, async (_event, bytes: Uint8Array) => {
     return await upsertMessage(decodeMessagePackPayload<messagesDao.MessageInput>(bytes))

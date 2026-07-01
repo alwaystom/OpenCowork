@@ -82,7 +82,10 @@ import {
   getPendingSessionMessageCountForSession,
   subscribePendingSessionMessages
 } from '@renderer/hooks/use-chat-actions'
-import { sessionToMarkdown } from '@renderer/lib/utils/export-chat'
+import {
+  exportSessionMarkdownFromDb,
+  exportSessionSnapshotFromDb
+} from '@renderer/lib/utils/export-chat'
 import { openDetachedSessionWindow, openSessionOrFocusDetached } from '@renderer/lib/session-window'
 import { cn } from '@renderer/lib/utils'
 import { WorkingFolderSelectorDialog } from '@renderer/components/chat/WorkingFolderSelectorDialog'
@@ -734,7 +737,7 @@ export function SessionListPanel(): React.JSX.Element {
       setAutoRenamingSessionId(sessionId)
 
       try {
-        await useChatStore.getState().loadSessionMessages(sessionId)
+        await useChatStore.getState().loadRecentSessionMessages(sessionId, true, 30)
         const session = getSessionSnapshot(sessionId)
         if (!session) return
 
@@ -820,10 +823,9 @@ export function SessionListPanel(): React.JSX.Element {
   )
 
   const handleExport = async (sessionId: string): Promise<void> => {
-    await useChatStore.getState().loadSessionMessages(sessionId)
     const session = getSessionSnapshot(sessionId)
     if (!session) return
-    const md = sessionToMarkdown(session)
+    const md = await exportSessionMarkdownFromDb(session)
     const filename =
       session.title
         .replace(/[^a-zA-Z0-9-_ ]/g, '')
@@ -1206,10 +1208,9 @@ export function SessionListPanel(): React.JSX.Element {
             </ContextMenuItem>
             <ContextMenuItem
               onClick={async () => {
-                await useChatStore.getState().loadSessionMessages(session.id)
                 const snapshot = getSessionSnapshot(session.id)
                 if (!snapshot) return
-                const json = JSON.stringify(snapshot, null, 2)
+                const json = JSON.stringify(await exportSessionSnapshotFromDb(snapshot), null, 2)
                 const blob = new Blob([json], {
                   type: 'application/json'
                 })

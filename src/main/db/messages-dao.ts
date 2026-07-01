@@ -28,6 +28,25 @@ export interface MessageContentMatch {
   snippet: string
 }
 
+export interface MessageWindowResult {
+  success: boolean
+  rows: MessageRow[]
+  start: number
+  end: number
+  total: number
+  anchorSortOrder: number
+  error?: string | null
+}
+
+export interface MessageInsertArtifactsResult {
+  success: boolean
+  inserted: number
+  start: number
+  end: number
+  total: number
+  error?: string | null
+}
+
 interface MessageMutationResult {
   success: boolean
   changed: number
@@ -78,6 +97,48 @@ export function getMessagesPage(
     { sessionId, limit, offset },
     120_000
   )
+}
+
+export function getMessagesRequestContext(args: {
+  sessionId: string
+  maxMessages: number
+  headLimit?: number
+}): Promise<MessageRow[]> {
+  return getNativeWorker().request<MessageRow[]>('db/messages-request-context', args, 120_000)
+}
+
+export function getMessagesWindowAround(args: {
+  sessionId: string
+  messageId?: string | null
+  sortOrder?: number | null
+  limit: number
+}): Promise<MessageWindowResult> {
+  return getNativeWorker().request<MessageWindowResult>('db/messages-window-around', args, 120_000)
+}
+
+export async function insertMessageArtifacts(args: {
+  sessionId: string
+  insertSortOrder: number
+  insertBeforeMessageId?: string | null
+  messages: Array<{
+    id: string
+    role: string
+    content: string
+    meta?: string | null
+    createdAt: number
+    usage?: string | null
+    sortOrder: number
+  }>
+}): Promise<MessageInsertArtifactsResult> {
+  const result = await getNativeWorker().request<MessageInsertArtifactsResult>(
+    'db/messages-insert-artifacts',
+    args,
+    120_000
+  )
+  if (!result.success) {
+    throw new Error(result.error || 'Native message artifact insert failed')
+  }
+  return result
 }
 
 export async function addMessage(msg: MessageInput): Promise<void> {

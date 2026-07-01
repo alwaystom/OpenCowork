@@ -7,6 +7,8 @@ import type { ToolCallStatus } from '@renderer/lib/agent/types'
 import type { ToolResultContent } from '@renderer/lib/api/types'
 import { inputSummary, summarizeSearchToolOutput } from './tool-call-summary'
 
+const COMMAND_TOOL_NAMES = new Set(['Bash', 'Shell', 'PowerShell'])
+
 interface ToolCallGroupItem {
   id: string
   name: string
@@ -75,7 +77,7 @@ function groupSummaryLabel(
   if (toolName === 'LS') {
     return t('toolGroup.listedDirs', { count })
   }
-  if (toolName === 'Bash') {
+  if (COMMAND_TOOL_NAMES.has(toolName)) {
     return t('toolGroup.ranCommandsTitle', {
       count,
       defaultValue: t('toolGroup.ranCommands', { count })

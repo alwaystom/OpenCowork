@@ -43,10 +43,13 @@ const MAX_BACKGROUND_PROCESS_OUTPUT_CHARS = 12_000
 const MAX_BACKGROUND_PROCESS_ENTRIES = 60
 const MAX_RUN_CHANGESETS = 40
 const BACKGROUND_PROCESS_OUTPUT_FLUSH_MS = 80
-const MAX_SUBAGENT_TRANSCRIPT_MESSAGES = 120
+const MAX_SUBAGENT_TRANSCRIPT_MESSAGES = 31
+const MAX_ACTIVE_SUBAGENT_TRANSCRIPT_CHARS = 128 * 1024
+const MAX_COMPLETED_SUBAGENT_TOOL_CALLS = 12
 const AGENT_STORE_STORAGE_KEY = 'opencowork-agent'
 const AGENT_HISTORY_STORAGE_KEY = 'opencowork-agent-history'
 const AGENT_HISTORY_PERSIST_DEBOUNCE_MS = 500
+const SHELL_TOOL_NAMES = new Set(['Bash', 'Shell', 'PowerShell'])
 
 function truncateText(value: string, max: number): string {
   if (value.length <= max) return value
@@ -59,9 +62,38 @@ function sigHasEntry(sig: string, value: string): boolean {
 }
 
 function trimSubAgentTranscript(sa: { transcript: UnifiedMessage[] }): void {
-  if (sa.transcript.length <= MAX_SUBAGENT_TRANSCRIPT_MESSAGES) return
-  const excess = sa.transcript.length - MAX_SUBAGENT_TRANSCRIPT_MESSAGES
-  sa.transcript.splice(0, excess)
+  if (sa.transcript.length > MAX_SUBAGENT_TRANSCRIPT_MESSAGES) {
+    const first = sa.transcript[0]
+    const tail = sa.transcript.slice(-(MAX_SUBAGENT_TRANSCRIPT_MESSAGES - 1))
+    sa.transcript.splice(
+      0,
+      sa.transcript.length,
+      ...(first && !tail.some((message) => message.id === first.id) ? [first, ...tail] : tail)
+    )
+  }
+
+  while (
+    sa.transcript.length > 1 &&
+    estimateMessagesContentChars(sa.transcript) > MAX_ACTIVE_SUBAGENT_TRANSCRIPT_CHARS
+  ) {
+    sa.transcript.splice(1, 1)
+  }
+}
+
+function estimateMessagesContentChars(messages: UnifiedMessage[]): number {
+  let total = 0
+  for (const message of messages) {
+    if (typeof message.content === 'string') {
+      total += message.content.length
+      continue
+    }
+    try {
+      total += JSON.stringify(message.content).length
+    } catch {
+      total += 0
+    }
+  }
+  return total
 }
 
 function normalizeToolInput(
@@ -159,7 +191,8 @@ function normalizeToolOutput(
   output: ToolResultContent | undefined
 ): ToolResultContent | undefined {
   if (output === undefined) return undefined
-  const compacted = toolName === 'Bash' ? compactBashToolResultContent(output) : output
+  const compacted =
+    toolName && SHELL_TOOL_NAMES.has(toolName) ? compactBashToolResultContent(output) : output
   return limitToolResultContent(compacted)
 }
 
@@ -371,18 +404,25 @@ function compactSubAgentTranscriptForHistory(transcript: UnifiedMessage[]): Unif
 }
 
 function compactSubAgentForHistory(sa: SubAgentState): SubAgentState {
+  const compactedTranscript = sa.isRunning ? compactSubAgentTranscriptForHistory(sa.transcript) : []
   return {
     ...sa,
     streamingText: '',
+    prompt: truncateText(sa.prompt, MAX_HISTORY_REPORT_CHARS),
+    description: truncateText(sa.description, MAX_HISTORY_REPORT_CHARS),
+    currentAssistantMessageId: sa.isRunning ? sa.currentAssistantMessageId : null,
     report:
       sa.report.length > MAX_HISTORY_REPORT_CHARS
         ? `${sa.report.slice(0, MAX_HISTORY_REPORT_CHARS)}\n[truncated]`
         : sa.report,
     toolCalls:
-      sa.toolCalls.length > MAX_HISTORY_TOOL_CALLS
-        ? sa.toolCalls.slice(-MAX_HISTORY_TOOL_CALLS)
+      sa.toolCalls.length >
+      (sa.isRunning ? MAX_HISTORY_TOOL_CALLS : MAX_COMPLETED_SUBAGENT_TOOL_CALLS)
+        ? sa.toolCalls.slice(
+            -(sa.isRunning ? MAX_HISTORY_TOOL_CALLS : MAX_COMPLETED_SUBAGENT_TOOL_CALLS)
+          )
         : sa.toolCalls,
-    transcript: compactSubAgentTranscriptForHistory(sa.transcript)
+    transcript: compactedTranscript
   }
 }
 
@@ -1303,6 +1343,7 @@ interface AgentStore {
   /** Remove all subagent / tool-call data that belongs to the given session */
   clearSessionData: (sessionId: string) => void
   releaseDormantSessionData: (residentSessionIds: string[]) => void
+  compactMemoryFootprint: () => void
 
   // Approval flow
   requestApproval: (toolCallId: string) => Promise<boolean>
@@ -2311,6 +2352,50 @@ export const useAgentStore = create<AgentStore>()(
               )
             }
           }
+        })
+        queueAgentHistoryPersistence()
+      },
+
+      compactMemoryFootprint: () => {
+        set((state) => {
+          trimToolCallArray(state.pendingToolCalls)
+          trimToolCallArray(state.executedToolCalls)
+
+          for (const calls of Object.values(state.sessionToolCallsCache)) {
+            trimToolCallArray(calls.pending)
+            trimToolCallArray(calls.executed)
+          }
+
+          for (const subAgent of Object.values(state.activeSubAgents)) {
+            trimSubAgentTranscript(subAgent)
+            if (subAgent.streamingText.length > MAX_STREAMING_TEXT_CHARS) {
+              subAgent.streamingText = truncateText(
+                subAgent.streamingText,
+                MAX_STREAMING_TEXT_CHARS
+              )
+            }
+          }
+
+          for (const [id, subAgent] of Object.entries(state.completedSubAgents)) {
+            state.completedSubAgents[id] = compactSubAgentForHistory(subAgent)
+          }
+          trimCompletedSubAgentsMap(state.completedSubAgents)
+
+          for (const liveState of Object.values(state.sessionSubAgentLiveCache)) {
+            for (const subAgent of Object.values(liveState.active)) {
+              trimSubAgentTranscript(subAgent)
+            }
+            for (const [id, subAgent] of Object.entries(liveState.completed)) {
+              liveState.completed[id] = compactSubAgentForHistory(subAgent)
+            }
+            trimCompletedSubAgentsMap(liveState.completed)
+          }
+
+          state.subAgentHistory = compactSubAgentListForPersistence(state.subAgentHistory)
+          state.sessionSubAgentSummaries = compactSessionSubAgentSummariesForPersistence(
+            state.sessionSubAgentSummaries
+          )
+          rebuildRunningSubAgentDerived(state)
         })
         queueAgentHistoryPersistence()
       },

@@ -45,6 +45,7 @@ export function toAgentEvent(e: AgentStreamEvent): AgentEvent | null {
     case 'message_end':
     case 'tool_use_generated':
     case 'tool_call_start':
+    case 'tool_call_update':
     case 'tool_call_approval_needed':
     case 'tool_call_result':
     case 'iteration_end':

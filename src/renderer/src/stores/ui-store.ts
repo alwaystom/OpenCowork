@@ -315,6 +315,8 @@ interface UIStore {
   toggleLeftSidebar: () => void
   setLeftSidebarOpen: (open: boolean) => void
   setLeftSidebarWidth: (width: number) => void
+  conversationPanelFullWidth: boolean
+  setConversationPanelFullWidth: (fullWidth: boolean) => void
   rightPanelOpen: boolean
   toggleRightPanel: () => void
   setRightPanelOpen: (open: boolean) => void
@@ -936,6 +938,9 @@ export const useUIStore = create<UIStore>()(
           ...(open ? closeRightSidePanels() : {})
         }),
       setLeftSidebarWidth: (width) => set({ leftSidebarWidth: clampLeftSidebarWidth(width) }),
+      conversationPanelFullWidth: false,
+      setConversationPanelFullWidth: (fullWidth) =>
+        set({ conversationPanelFullWidth: fullWidth }),
       rightPanelOpen: false,
       toggleRightPanel: () =>
         set((state) => {
@@ -2009,6 +2014,7 @@ export const useUIStore = create<UIStore>()(
       partialize: (state) => ({
         leftSidebarOpen: state.leftSidebarOpen,
         leftSidebarWidth: clampLeftSidebarWidth(state.leftSidebarWidth),
+        conversationPanelFullWidth: state.conversationPanelFullWidth,
         rightPanelOpen: state.rightPanelOpen,
         runtimeStatusPanelOpen: state.runtimeStatusPanelOpen,
         rightPanelWidth: clampRightPanelWidth(state.rightPanelWidth),
@@ -2032,6 +2038,10 @@ export const useUIStore = create<UIStore>()(
           leftSidebarWidth: clampLeftSidebarWidth(
             state.leftSidebarWidth ?? current.leftSidebarWidth
           ),
+          conversationPanelFullWidth:
+            typeof state.conversationPanelFullWidth === 'boolean'
+              ? state.conversationPanelFullWidth
+              : current.conversationPanelFullWidth,
           rightPanelWidth: clampRightPanelWidth(state.rightPanelWidth ?? current.rightPanelWidth),
           runtimeStatusPanelOpen:
             typeof state.runtimeStatusPanelOpen === 'boolean'

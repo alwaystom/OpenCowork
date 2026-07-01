@@ -3,6 +3,7 @@ import { useStoreWithEqualityFn } from 'zustand/traditional'
 import packageJson from '../../../../../package.json'
 import { useTranslation } from 'react-i18next'
 import {
+  ArrowDownAZ,
   BookOpen,
   CalendarDays,
   ChevronDown,
@@ -17,6 +18,7 @@ import {
   FolderOpen,
   GitBranch,
   Image,
+  ListFilter,
   Loader2,
   MessageSquare,
   Monitor,
@@ -47,6 +49,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@renderer/components/ui/dropdown-menu'
@@ -84,7 +89,10 @@ import {
   getPendingSessionMessageCountForSession,
   subscribePendingSessionMessages
 } from '@renderer/hooks/use-chat-actions'
-import { sessionToMarkdown } from '@renderer/lib/utils/export-chat'
+import {
+  exportSessionMarkdownFromDb,
+  exportSessionSnapshotFromDb
+} from '@renderer/lib/utils/export-chat'
 import { openDetachedSessionWindow, openSessionOrFocusDetached } from '@renderer/lib/session-window'
 import { cn } from '@renderer/lib/utils'
 import { ipcClient } from '@renderer/lib/ipc/ipc-client'
@@ -102,6 +110,7 @@ const MINUTE_MS = 60 * 1000
 const HOUR_MS = 60 * MINUTE_MS
 const DAY_MS = 24 * HOUR_MS
 const WEEK_MS = 7 * DAY_MS
+const PROJECT_SORT_STORAGE_KEY = 'openCowork.workspaceSidebar.projectSortMode'
 const SIDEBAR_TREE_ROW_CLASS = 'workspace-sidebar-row min-h-8 rounded-md border border-transparent'
 const SIDEBAR_TREE_ACTIVE_CLASS = 'workspace-sidebar-row--active text-foreground'
 const SIDEBAR_TREE_HOVER_CLASS =
@@ -109,6 +118,14 @@ const SIDEBAR_TREE_HOVER_CLASS =
 const SIDEBAR_TREE_ACTION_BUTTON_CLASS = 'workspace-sidebar-row-action size-6 rounded-md'
 const SIDEBAR_TREE_LABEL_CLASS = 'text-[13px] leading-5'
 const SIDEBAR_TREE_META_CLASS = 'text-[10px]'
+const PROJECT_SORT_MODES = ['updatedAt', 'name', 'createdAt'] as const
+type ProjectSortMode = (typeof PROJECT_SORT_MODES)[number]
+
+const PROJECT_SORT_LABEL_KEYS: Record<ProjectSortMode, string> = {
+  updatedAt: 'sidebar.projectSortRecentlyUpdated',
+  name: 'sidebar.projectSortName',
+  createdAt: 'sidebar.projectSortCreatedAt'
+}
 
 type FolderPickerTarget =
   | { type: 'create'; projectName: string; preferredSection?: 'local' | 'ssh' }
@@ -253,9 +270,69 @@ function sanitizeExportFileName(name: string): string {
   return sanitized || 'conversation'
 }
 
-function sortProjects(left: ProjectListItem, right: ProjectListItem): number {
+function isProjectSortMode(value: string | null): value is ProjectSortMode {
+  return PROJECT_SORT_MODES.includes(value as ProjectSortMode)
+}
+
+function readProjectSortMode(): ProjectSortMode {
+  try {
+    const stored = window.localStorage.getItem(PROJECT_SORT_STORAGE_KEY)
+    if (isProjectSortMode(stored)) return stored
+  } catch {
+    // Ignore storage failures and keep the existing default order.
+  }
+  return 'updatedAt'
+}
+
+function writeProjectSortMode(mode: ProjectSortMode): void {
+  try {
+    window.localStorage.setItem(PROJECT_SORT_STORAGE_KEY, mode)
+  } catch {
+    // Sorting still works for the current session if persistence is unavailable.
+  }
+}
+
+function compareProjectNames(
+  left: ProjectListItem,
+  right: ProjectListItem,
+  collator: Intl.Collator
+): number {
+  return collator.compare(left.name, right.name)
+}
+
+function compareProjectIds(left: ProjectListItem, right: ProjectListItem): number {
+  return left.id.localeCompare(right.id)
+}
+
+function sortProjects(
+  left: ProjectListItem,
+  right: ProjectListItem,
+  mode: ProjectSortMode,
+  collator: Intl.Collator
+): number {
   if (!!left.pinned !== !!right.pinned) return left.pinned ? -1 : 1
-  return right.updatedAt - left.updatedAt
+  if (mode === 'name') {
+    return (
+      compareProjectNames(left, right, collator) ||
+      right.updatedAt - left.updatedAt ||
+      right.createdAt - left.createdAt ||
+      compareProjectIds(left, right)
+    )
+  }
+  if (mode === 'createdAt') {
+    return (
+      right.createdAt - left.createdAt ||
+      compareProjectNames(left, right, collator) ||
+      right.updatedAt - left.updatedAt ||
+      compareProjectIds(left, right)
+    )
+  }
+  return (
+    right.updatedAt - left.updatedAt ||
+    compareProjectNames(left, right, collator) ||
+    right.createdAt - left.createdAt ||
+    compareProjectIds(left, right)
+  )
 }
 
 function sortSessions(left: SessionListItem, right: SessionListItem): number {
@@ -400,6 +477,11 @@ export function WorkspaceSidebar(): React.JSX.Element {
     return [...ids].sort().join('\u0000')
   })
   const language = useSettingsStore((state) => state.language)
+  const relativeTimeLocale = useMemo(() => resolveIntlLocale(language), [language])
+  const projectNameCollator = useMemo(
+    () => new Intl.Collator(relativeTimeLocale, { numeric: true, sensitivity: 'base' }),
+    [relativeTimeLocale]
+  )
   const importSessionInputRef = useRef<HTMLInputElement>(null)
   const importProjectInputRef = useRef<HTMLInputElement>(null)
   const treeScrollRef = useRef<HTMLDivElement>(null)
@@ -429,6 +511,7 @@ export function WorkspaceSidebar(): React.JSX.Element {
   const [folderPickerTarget, setFolderPickerTarget] = useState<FolderPickerTarget | null>(null)
   const [featureMenuOpen, setFeatureMenuOpen] = useState(false)
   const [projectsSectionCollapsed, setProjectsSectionCollapsed] = useState(false)
+  const [projectSortMode, setProjectSortMode] = useState<ProjectSortMode>(readProjectSortMode)
   const [isFolderDragOver, setIsFolderDragOver] = useState(false)
   const [chatsSectionCollapsed, setChatsSectionCollapsed] = useState(false)
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set())
@@ -469,8 +552,8 @@ export function WorkspaceSidebar(): React.JSX.Element {
       projects
         .filter((project) => !project.pluginId)
         .slice()
-        .sort(sortProjects),
-    [projects]
+        .sort((left, right) => sortProjects(left, right, projectSortMode, projectNameCollator)),
+    [projectNameCollator, projectSortMode, projects]
   )
   const folderPickerProjectId =
     folderPickerTarget?.type === 'project' ? folderPickerTarget.projectId : null
@@ -745,6 +828,12 @@ export function WorkspaceSidebar(): React.JSX.Element {
     [openProjectNewSession]
   )
 
+  const handleProjectSortModeChange = useCallback((value: string) => {
+    if (!isProjectSortMode(value)) return
+    setProjectSortMode(value)
+    writeProjectSortMode(value)
+  }, [])
+
   const handleClearChatSessions = useCallback(async () => {
     const chatSessionIds = useChatStore
       .getState()
@@ -833,7 +922,7 @@ export function WorkspaceSidebar(): React.JSX.Element {
       setAutoRenamingSessionId(sessionId)
 
       try {
-        await useChatStore.getState().loadSessionMessages(sessionId)
+        await useChatStore.getState().loadRecentSessionMessages(sessionId, true, 30)
         const session = useChatStore.getState().sessions.find((item) => item.id === sessionId)
         if (!session) return
 
@@ -1107,14 +1196,13 @@ export function WorkspaceSidebar(): React.JSX.Element {
           {session.messageCount > 0 && (
             <ContextMenuItem
               onClick={async () => {
-                await useChatStore.getState().loadSessionMessages(session.id)
                 const snapshot = useChatStore
                   .getState()
                   .sessions.find((item) => item.id === session.id)
                 if (!snapshot) return
                 downloadMarkdown(
                   `${sanitizeExportFileName(snapshot.title)}.md`,
-                  sessionToMarkdown(snapshot)
+                  await exportSessionMarkdownFromDb(snapshot)
                 )
                 toast.success(t('sidebar_toast.exportedOne'))
               }}
@@ -1125,7 +1213,6 @@ export function WorkspaceSidebar(): React.JSX.Element {
           )}
           <ContextMenuItem
             onClick={async () => {
-              await useChatStore.getState().loadSessionMessages(session.id)
               const snapshot = useChatStore
                 .getState()
                 .sessions.find((item) => item.id === session.id)
@@ -1133,7 +1220,7 @@ export function WorkspaceSidebar(): React.JSX.Element {
               downloadJson(`${sanitizeExportFileName(snapshot.title)}.json`, {
                 version: 1,
                 type: 'session',
-                session: snapshot
+                session: await exportSessionSnapshotFromDb(snapshot)
               } satisfies ExportedSessionPayload)
               toast.success(t('sidebar.exportedAsJson'))
             }}
@@ -1177,19 +1264,12 @@ export function WorkspaceSidebar(): React.JSX.Element {
     )
   }
 
-  const relativeTimeLocale = resolveIntlLocale(language)
-
   const handleExportProject = useCallback(
     async (project: ProjectListItem) => {
       const projectSessions = useChatStore
         .getState()
         .sessions.filter((session) => session.projectId === project.id)
-      for (const session of projectSessions) {
-        await useChatStore.getState().loadSessionMessages(session.id)
-      }
-      const snapshotSessions = useChatStore
-        .getState()
-        .sessions.filter((session) => session.projectId === project.id)
+      const snapshotSessions = await Promise.all(projectSessions.map(exportSessionSnapshotFromDb))
       downloadJson(`${sanitizeExportFileName(project.name)}.json`, {
         version: 1,
         type: 'project',
@@ -1226,6 +1306,14 @@ export function WorkspaceSidebar(): React.JSX.Element {
   }, [clearFeatureMenuCloseTimer])
 
   useEffect(() => clearFeatureMenuCloseTimer, [clearFeatureMenuCloseTimer])
+
+  const projectSortLabel = t(PROJECT_SORT_LABEL_KEYS[projectSortMode])
+  const ProjectSortIcon =
+    projectSortMode === 'name'
+      ? ArrowDownAZ
+      : projectSortMode === 'createdAt'
+        ? CalendarDays
+        : ListFilter
 
   return (
     <>
@@ -1371,7 +1459,7 @@ export function WorkspaceSidebar(): React.JSX.Element {
               <button
                 type="button"
                 aria-expanded={!projectsSectionCollapsed}
-                className="flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-accent/70 hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left transition-colors hover:bg-accent/70 hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                 onClick={() => setProjectsSectionCollapsed((collapsed) => !collapsed)}
                 title={projectsSectionCollapsed ? t('rightPanel.expand') : t('rightPanel.collapse')}
               >
@@ -1388,6 +1476,43 @@ export function WorkspaceSidebar(): React.JSX.Element {
                 </span>
               </button>
               <div className="flex items-center gap-0.5">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-6"
+                      title={t('sidebar.projectSortTitle', { sort: projectSortLabel })}
+                      aria-label={t('sidebar.projectSortTitle', { sort: projectSortLabel })}
+                    >
+                      <ProjectSortIcon className="size-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-48">
+                    <DropdownMenuLabel className="px-2 py-1 text-[11px] text-muted-foreground">
+                      {t('sidebar.projectSortBy')}
+                    </DropdownMenuLabel>
+                    <DropdownMenuRadioGroup
+                      value={projectSortMode}
+                      onValueChange={handleProjectSortModeChange}
+                    >
+                      {PROJECT_SORT_MODES.map((mode) => {
+                        const SortOptionIcon =
+                          mode === 'name'
+                            ? ArrowDownAZ
+                            : mode === 'createdAt'
+                              ? CalendarDays
+                              : ListFilter
+                        return (
+                          <DropdownMenuRadioItem key={mode} value={mode}>
+                            <SortOptionIcon className="size-4" />
+                            <span>{t(PROJECT_SORT_LABEL_KEYS[mode])}</span>
+                          </DropdownMenuRadioItem>
+                        )
+                      })}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1886,7 +2011,7 @@ export function WorkspaceSidebar(): React.JSX.Element {
                 <button
                   type="button"
                   aria-expanded={!chatsSectionCollapsed}
-                  className="flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-accent/70 hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                  className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left transition-colors hover:bg-accent/70 hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                   onClick={() => setChatsSectionCollapsed((collapsed) => !collapsed)}
                   title={chatsSectionCollapsed ? t('rightPanel.expand') : t('rightPanel.collapse')}
                 >

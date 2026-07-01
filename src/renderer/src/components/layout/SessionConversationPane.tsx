@@ -7,7 +7,9 @@ import {
   ExternalLink,
   ImageDown,
   Loader2,
+  Maximize2,
   MoreHorizontal,
+  Minimize2,
   Pencil,
   Trash2
 } from 'lucide-react'
@@ -44,7 +46,7 @@ import {
 import { ipcClient } from '@renderer/lib/ipc/ipc-client'
 import { IPC } from '@renderer/lib/ipc/channels'
 import { openDetachedSessionWindow } from '@renderer/lib/session-window'
-import { sessionToMarkdown } from '@renderer/lib/utils/export-chat'
+import { exportSessionMarkdownFromDb } from '@renderer/lib/utils/export-chat'
 import { copySessionAsImageToClipboard } from '@renderer/lib/utils/export-session-image'
 import { cn } from '@renderer/lib/utils'
 import { useChatStore } from '@renderer/stores/chat-store'
@@ -106,6 +108,8 @@ export function SessionConversationPane({
       ? Boolean(state.bottomTerminalDockOpenByProjectId[sessionView.projectId])
       : false
   )
+  const conversationPanelFullWidth = useUIStore((state) => state.conversationPanelFullWidth)
+  const setConversationPanelFullWidth = useUIStore((state) => state.setConversationPanelFullWidth)
   const animationsEnabled = useSettingsStore((state) => state.animationsEnabled)
   const isStreaming = Boolean(streamingMessageId)
   const {
@@ -152,11 +156,11 @@ export function SessionConversationPane({
     await ipcClient.invoke(IPC.SHELL_OPEN_PATH, sessionView.workingFolder)
   }, [sessionView.workingFolder])
 
-  const handleCopyAll = useCallback((): void => {
+  const handleCopyAll = useCallback(async (): Promise<void> => {
     if (!resolvedSessionId) return
     const session = useChatStore.getState().sessions.find((item) => item.id === resolvedSessionId)
     if (!session) return
-    navigator.clipboard.writeText(sessionToMarkdown(session))
+    await navigator.clipboard.writeText(await exportSessionMarkdownFromDb(session))
     setCopiedAll(true)
     window.setTimeout(() => setCopiedAll(false), 2000)
   }, [resolvedSessionId])
@@ -188,6 +192,10 @@ export function SessionConversationPane({
     if (!resolvedSessionId) return
     await openDetachedSessionWindow(resolvedSessionId)
   }, [resolvedSessionId])
+
+  const handleTogglePanelWidth = useCallback((): void => {
+    setConversationPanelFullWidth(!conversationPanelFullWidth)
+  }, [conversationPanelFullWidth, setConversationPanelFullWidth])
 
   const handleOpenRenameDialog = useCallback((): void => {
     const nextTitle = sessionView.title?.trim()
@@ -287,6 +295,32 @@ export function SessionConversationPane({
         <div className="flex shrink-0 items-center gap-1">
           {showSessionActionBar ? (
             <div className="flex items-center rounded-lg border border-border/60 bg-background/70 p-0.5 shadow-sm backdrop-blur-sm">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7 rounded-md text-muted-foreground/80 hover:text-foreground"
+                    onClick={handleTogglePanelWidth}
+                  >
+                    {conversationPanelFullWidth ? (
+                      <Minimize2 className="size-4" />
+                    ) : (
+                      <Maximize2 className="size-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {conversationPanelFullWidth
+                    ? t('layout.useStandardWidth', { defaultValue: 'Use standard width' })
+                    : t('layout.useFullWidth', { defaultValue: 'Use full width' })}
+                </TooltipContent>
+              </Tooltip>
+
+              {hasProjectFolderAction || hasTranscriptActions ? (
+                <div className="mx-0.5 h-4 w-px bg-border/60" />
+              ) : null}
+
               {hasProjectFolderAction ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -397,6 +431,16 @@ export function SessionConversationPane({
                     <Pencil className="size-4" />
                     {renameSessionLabel}
                   </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleTogglePanelWidth}>
+                    {conversationPanelFullWidth ? (
+                      <Minimize2 className="size-4" />
+                    ) : (
+                      <Maximize2 className="size-4" />
+                    )}
+                    {conversationPanelFullWidth
+                      ? t('layout.useStandardWidth', { defaultValue: 'Use standard width' })
+                      : t('layout.useFullWidth', { defaultValue: 'Use full width' })}
+                  </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={handleCopyAll}
                     disabled={isStreaming || !hasTranscriptActions}
@@ -443,6 +487,7 @@ export function SessionConversationPane({
       <div key={conversationRoot} className="flex min-h-0 flex-1 flex-col">
         <MessageList
           sessionId={resolvedSessionId}
+          fullWidth={conversationPanelFullWidth}
           onRetry={retryLastMessage}
           onContinue={continueLastToolExecution}
           onEditUserMessage={editAndResend}
@@ -462,6 +507,7 @@ export function SessionConversationPane({
           hideWorkingFolderIndicator
           onCompressContext={manualCompressContext}
           isStreaming={isStreaming}
+          fullWidth={conversationPanelFullWidth}
         />
         {animationsEnabled ? (
           <AnimatePresence initial={false}>

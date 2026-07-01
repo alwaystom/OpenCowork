@@ -5,6 +5,8 @@ using Microsoft.Data.Sqlite;
 
 internal static class DbMessageTools
 {
+    private const int DefaultRequestContextHeadLimit = 12;
+
     private static readonly IReadOnlyDictionary<string, int> RoleOrder = new Dictionary<string, int>(StringComparer.Ordinal)
     {
         ["user"] = 0,
@@ -25,6 +27,98 @@ internal static class DbMessageTools
     public static WorkerResponse ListPage(JsonElement parameters)
     {
         return ReadRows(parameters, role: null, paged: true);
+    }
+
+    public static WorkerResponse RequestContext(JsonElement parameters)
+    {
+        try
+        {
+            var sessionId = RequireString(parameters, "sessionId");
+            var maxMessages = Math.Clamp(JsonHelpers.GetInt(parameters, "maxMessages", 160), 1, 5000);
+            var requestedHeadLimit = Math.Clamp(
+                JsonHelpers.GetInt(parameters, "headLimit", DefaultRequestContextHeadLimit),
+                0,
+                maxMessages);
+
+            using var connection = DbConnectionFactory.OpenReadWrite(parameters);
+            NormalizeSessionMessageSortOrders(connection, sessionId);
+
+            var total = GetSessionMessageCount(connection, sessionId);
+            if (total <= 0)
+            {
+                return WorkerResponse.Json(new List<MessageRow>(), WorkerJsonContext.Default.ListMessageRow);
+            }
+
+            var headLimit = total > maxMessages
+                ? Math.Min(requestedHeadLimit, Math.Max(0, maxMessages / 4))
+                : 0;
+            var tailLimit = Math.Min(Math.Max(1, maxMessages - headLimit), total);
+            var tailOffset = Math.Max(0, total - tailLimit);
+            var rows = new List<MessageRow>();
+
+            if (headLimit > 0)
+            {
+                rows.AddRange(ReadRowsPage(connection, sessionId, headLimit, 0));
+            }
+
+            rows.AddRange(ReadCompactArtifactRows(connection, sessionId));
+            rows.AddRange(ReadRowsPage(connection, sessionId, tailLimit, tailOffset));
+
+            var deduped = rows
+                .OrderBy(row => row.SortOrder)
+                .ThenBy(row => row.CreatedAt)
+                .GroupBy(row => row.Id, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .ToList();
+
+            return WorkerResponse.Json(deduped, WorkerJsonContext.Default.ListMessageRow);
+        }
+        catch
+        {
+            return WorkerResponse.Json(new List<MessageRow>(), WorkerJsonContext.Default.ListMessageRow);
+        }
+    }
+
+    public static WorkerResponse WindowAround(JsonElement parameters)
+    {
+        try
+        {
+            var sessionId = RequireString(parameters, "sessionId");
+            var limit = Math.Clamp(JsonHelpers.GetInt(parameters, "limit", 30), 1, 5000);
+            var requestedSortOrder = JsonHelpers.GetInt(parameters, "sortOrder", -1);
+            var messageId = JsonHelpers.GetString(parameters, "messageId")?.Trim();
+
+            using var connection = DbConnectionFactory.OpenReadWrite(parameters);
+            NormalizeSessionMessageSortOrders(connection, sessionId);
+
+            var total = GetSessionMessageCount(connection, sessionId);
+            if (total <= 0)
+            {
+                return WorkerResponse.Json(
+                    new MessageWindowResult(true, new List<MessageRow>(), 0, 0, 0, 0, null),
+                    WorkerJsonContext.Default.MessageWindowResult);
+            }
+
+            var anchorSortOrder = ResolveAnchorSortOrder(
+                connection,
+                sessionId,
+                messageId,
+                requestedSortOrder,
+                total);
+            var start = Math.Clamp(anchorSortOrder - (limit / 2), 0, Math.Max(0, total - limit));
+            var rows = ReadRowsPage(connection, sessionId, limit, start);
+            var end = rows.Count == 0 ? start : start + rows.Count;
+
+            return WorkerResponse.Json(
+                new MessageWindowResult(true, rows, start, end, total, anchorSortOrder, null),
+                WorkerJsonContext.Default.MessageWindowResult);
+        }
+        catch (Exception ex)
+        {
+            return WorkerResponse.Json(
+                new MessageWindowResult(false, new List<MessageRow>(), 0, 0, 0, 0, ex.Message),
+                WorkerJsonContext.Default.MessageWindowResult);
+        }
     }
 
     public static WorkerResponse SearchContent(JsonElement parameters)
@@ -138,6 +232,87 @@ internal static class DbMessageTools
         catch (Exception ex)
         {
             return MutationError(ex.Message);
+        }
+    }
+
+    public static WorkerResponse InsertArtifacts(JsonElement parameters)
+    {
+        try
+        {
+            var sessionId = RequireString(parameters, "sessionId");
+            if (!parameters.TryGetProperty("messages", out var messagesElement) ||
+                messagesElement.ValueKind != JsonValueKind.Array)
+            {
+                return InsertArtifactsResult(true, 0, 0, 0, 0, null);
+            }
+
+            var messages = messagesElement
+                .EnumerateArray()
+                .Where(message => message.ValueKind == JsonValueKind.Object)
+                .Select(message => ReadMessageInput(message, sessionId))
+                .Where(IsCompactArtifactInput)
+                .ToList();
+
+            using var connection = DbConnectionFactory.OpenReadWrite(parameters);
+            NormalizeSessionMessageSortOrders(connection, sessionId);
+
+            using var transaction = connection.BeginTransaction();
+            DeleteExistingCompactArtifacts(connection, transaction, sessionId, messages);
+            NormalizeSessionMessageSortOrders(connection, transaction, sessionId);
+
+            var totalBeforeInsert = CountRows(
+                connection,
+                transaction,
+                "SELECT COUNT(*) FROM messages WHERE session_id = $sessionId",
+                new SqlParam("$sessionId", sessionId));
+            if (messages.Count == 0)
+            {
+                SetMessageCount(connection, transaction, sessionId, totalBeforeInsert);
+                transaction.Commit();
+                return InsertArtifactsResult(true, 0, 0, 0, totalBeforeInsert, null);
+            }
+
+            var insertSortOrder = ResolveInsertArtifactSortOrder(
+                connection,
+                transaction,
+                sessionId,
+                JsonHelpers.GetString(parameters, "insertBeforeMessageId")?.Trim(),
+                JsonHelpers.GetInt(parameters, "insertSortOrder", totalBeforeInsert),
+                totalBeforeInsert);
+
+            ShiftSessionMessageSortOrders(
+                connection,
+                transaction,
+                sessionId,
+                insertSortOrder,
+                messages.Count);
+
+            var inserted = 0;
+            for (var index = 0; index < messages.Count; index++)
+            {
+                var message = messages[index] with { SortOrder = insertSortOrder + index };
+                inserted += InsertMessage(connection, transaction, message, "INSERT OR REPLACE");
+            }
+
+            var total = CountRows(
+                connection,
+                transaction,
+                "SELECT COUNT(*) FROM messages WHERE session_id = $sessionId",
+                new SqlParam("$sessionId", sessionId));
+            SetMessageCount(connection, transaction, sessionId, total);
+            transaction.Commit();
+
+            return InsertArtifactsResult(
+                true,
+                inserted,
+                insertSortOrder,
+                insertSortOrder + inserted,
+                total,
+                null);
+        }
+        catch (Exception ex)
+        {
+            return InsertArtifactsResult(false, 0, 0, 0, 0, ex.Message);
         }
     }
 
@@ -556,6 +731,99 @@ internal static class DbMessageTools
         }
     }
 
+    private static int GetSessionMessageCount(SqliteConnection connection, string sessionId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM messages WHERE session_id = $sessionId";
+        command.Parameters.AddWithValue("$sessionId", sessionId);
+        return Convert.ToInt32(command.ExecuteScalar() ?? 0);
+    }
+
+    private static int ResolveAnchorSortOrder(
+        SqliteConnection connection,
+        string sessionId,
+        string? messageId,
+        int requestedSortOrder,
+        int total)
+    {
+        if (!string.IsNullOrWhiteSpace(messageId))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT sort_order
+                  FROM messages
+                 WHERE session_id = $sessionId AND id = $messageId
+                 LIMIT 1
+                """;
+            command.Parameters.AddWithValue("$sessionId", sessionId);
+            command.Parameters.AddWithValue("$messageId", messageId);
+            var value = command.ExecuteScalar();
+            if (value is not null && value != DBNull.Value)
+            {
+                return Math.Clamp(Convert.ToInt32(value), 0, Math.Max(0, total - 1));
+            }
+        }
+
+        if (requestedSortOrder >= 0)
+        {
+            return Math.Clamp(requestedSortOrder, 0, Math.Max(0, total - 1));
+        }
+
+        return Math.Max(0, total - 1);
+    }
+
+    private static List<MessageRow> ReadRowsPage(
+        SqliteConnection connection,
+        string sessionId,
+        int limit,
+        int offset)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, session_id, role, content, meta, created_at, usage, sort_order
+              FROM messages
+             WHERE session_id = $sessionId
+             ORDER BY sort_order ASC, created_at ASC
+             LIMIT $limit OFFSET $offset
+            """;
+        command.Parameters.AddWithValue("$sessionId", sessionId);
+        command.Parameters.AddWithValue("$limit", limit);
+        command.Parameters.AddWithValue("$offset", offset);
+
+        var rows = new List<MessageRow>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(ReadMessageRow(reader));
+        }
+        return rows;
+    }
+
+    private static List<MessageRow> ReadCompactArtifactRows(SqliteConnection connection, string sessionId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, session_id, role, content, meta, created_at, usage, sort_order
+              FROM messages
+             WHERE session_id = $sessionId
+               AND (
+                 meta LIKE '%compactBoundary%' OR
+                 meta LIKE '%compactSummary%' OR
+                 content LIKE '%[Context Memory Compressed Summary]%'
+               )
+             ORDER BY sort_order ASC, created_at ASC
+            """;
+        command.Parameters.AddWithValue("$sessionId", sessionId);
+
+        var rows = new List<MessageRow>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(ReadMessageRow(reader));
+        }
+        return rows;
+    }
+
     private static List<MessageContentRow> LoadMessageContents(SqliteConnection connection, string sessionId)
     {
         using var command = connection.CreateCommand();
@@ -733,9 +1001,20 @@ internal static class DbMessageTools
 
     private static void NormalizeSessionMessageSortOrders(SqliteConnection connection, string sessionId)
     {
+        using var transaction = connection.BeginTransaction();
+        NormalizeSessionMessageSortOrders(connection, transaction, sessionId);
+        transaction.Commit();
+    }
+
+    private static void NormalizeSessionMessageSortOrders(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sessionId)
+    {
         var rows = new List<MessageOrderRow>();
         using (var command = connection.CreateCommand())
         {
+            command.Transaction = transaction;
             command.CommandText = """
                 SELECT id, role, created_at, sort_order
                   FROM messages
@@ -765,7 +1044,6 @@ internal static class DbMessageTools
             .ThenBy(row => row.SortOrder)
             .ToList();
 
-        using var transaction = connection.BeginTransaction();
         using var update = connection.CreateCommand();
         update.Transaction = transaction;
         update.CommandText = "UPDATE messages SET sort_order = $sortOrder WHERE id = $id";
@@ -782,7 +1060,6 @@ internal static class DbMessageTools
             idParameter.Value = row.Id;
             update.ExecuteNonQuery();
         }
-        transaction.Commit();
     }
 
     private static bool HasSortOrderAnomaly(IReadOnlyList<MessageOrderRow> rows)
@@ -820,6 +1097,110 @@ internal static class DbMessageTools
              """;
         AddMessageParameters(command, message);
         return command.ExecuteNonQuery();
+    }
+
+    private static void DeleteExistingCompactArtifacts(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sessionId,
+        IReadOnlyList<MessageInput> incomingArtifacts)
+    {
+        ExecuteNonQuery(
+            connection,
+            transaction,
+            """
+            DELETE FROM messages
+             WHERE session_id = $sessionId
+               AND (
+                 meta LIKE '%compactBoundary%' OR
+                 meta LIKE '%compactSummary%' OR
+                 content LIKE '%[Context Memory Compressed Summary]%'
+               )
+            """,
+            new SqlParam("$sessionId", sessionId));
+
+        foreach (var artifact in incomingArtifacts)
+        {
+            ExecuteNonQuery(
+                connection,
+                transaction,
+                "DELETE FROM messages WHERE session_id = $sessionId AND id = $id",
+                new("$sessionId", sessionId),
+                new("$id", artifact.Id));
+        }
+    }
+
+    private static int ResolveInsertArtifactSortOrder(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sessionId,
+        string? insertBeforeMessageId,
+        int requestedSortOrder,
+        int total)
+    {
+        if (!string.IsNullOrWhiteSpace(insertBeforeMessageId))
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT sort_order
+                  FROM messages
+                 WHERE session_id = $sessionId AND id = $messageId
+                 LIMIT 1
+                """;
+            command.Parameters.AddWithValue("$sessionId", sessionId);
+            command.Parameters.AddWithValue("$messageId", insertBeforeMessageId);
+            var value = command.ExecuteScalar();
+            if (value is not null && value != DBNull.Value)
+            {
+                return Math.Clamp(Convert.ToInt32(value), 0, total);
+            }
+        }
+
+        if (requestedSortOrder < 0)
+        {
+            return total;
+        }
+
+        return Math.Clamp(requestedSortOrder, 0, total);
+    }
+
+    private static void ShiftSessionMessageSortOrders(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sessionId,
+        int startSortOrder,
+        int delta)
+    {
+        if (delta <= 0)
+        {
+            return;
+        }
+
+        ExecuteNonQuery(
+            connection,
+            transaction,
+            """
+            UPDATE messages
+               SET sort_order = sort_order + $delta
+             WHERE session_id = $sessionId AND sort_order >= $startSortOrder
+            """,
+            new("$delta", delta),
+            new("$sessionId", sessionId),
+            new("$startSortOrder", startSortOrder));
+    }
+
+    private static bool IsCompactArtifactInput(MessageInput message)
+    {
+        if (message.Meta?.Contains("compactBoundary", StringComparison.Ordinal) == true ||
+            message.Meta?.Contains("compactSummary", StringComparison.Ordinal) == true)
+        {
+            return true;
+        }
+
+        return message.Content.Contains(
+            "[Context Memory Compressed Summary]",
+            StringComparison.Ordinal);
     }
 
     private static bool MessageExists(
@@ -980,6 +1361,19 @@ internal static class DbMessageTools
         return WorkerResponse.Json(
             new MessageMutationResult(false, 0, error),
             WorkerJsonContext.Default.MessageMutationResult);
+    }
+
+    private static WorkerResponse InsertArtifactsResult(
+        bool success,
+        int inserted,
+        int start,
+        int end,
+        int total,
+        string? error)
+    {
+        return WorkerResponse.Json(
+            new MessageInsertArtifactsResult(success, inserted, start, end, total, error),
+            WorkerJsonContext.Default.MessageInsertArtifactsResult);
     }
 
     private static string RequireString(JsonElement parameters, string name)

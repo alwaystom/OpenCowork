@@ -45,35 +45,59 @@ internal static partial class AgentRuntimeOpenAIResponsesProvider
                 $"responses previous_response_id suppressed transport=http responseId={previousResponse.ResponseId}");
         }
 
-        await AgentRuntimeTools.EmitAsync(
+        await EmitRequestDebugAsync(
+            parameters,
+            provider,
             state,
             context,
-            new AgentRuntimeStreamEvent(
-                "request_debug",
-                DebugInfo: new AgentRuntimeRequestDebugInfo(
-                    requestUrl,
-                    useWebSocket ? "WS" : "POST",
-                    BuildDebugHeaders(provider, useWebSocket),
-                    AgentRuntimeDebugPayload.PrepareBody(body, parameters),
-                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    JsonHelpers.GetString(provider, "providerId"),
-                    JsonHelpers.GetString(provider, "providerBuiltinId"),
-                    model,
-                    ExecutionPath: "sidecar",
-                    Transport: transport)));
+            requestUrl,
+            useWebSocket,
+            body,
+            model,
+            transport);
 
         var startedAt = Stopwatch.GetTimestamp();
         var parseState = new ResponsesParseState();
         WorkerLog.Debug(
             $"responses provider request start model={model} transport={transport} url={requestUrl}");
 
-        if (useWebSocket && websocketUrl is not null)
+        try
         {
-            await ExecuteWebSocketAsync(websocketUrl, body, provider, parseState, state, context, startedAt);
+            if (useWebSocket && websocketUrl is not null)
+            {
+                await ExecuteWebSocketAsync(websocketUrl, body, provider, parseState, state, context, startedAt);
+            }
+            else
+            {
+                await ExecuteHttpSseAsync(httpUrl, body, provider, parseState, state, context, startedAt);
+            }
         }
-        else
+        catch (InvalidOperationException ex) when (
+            useWebSocket &&
+            websocketUrl is not null &&
+            IsMissingToolOutputError(ex))
         {
-            await ExecuteHttpSseAsync(httpUrl, body, provider, parseState, state, context, startedAt);
+            WorkerLog.Warn(
+                "responses previous_response_id replay failed due to missing tool output; " +
+                "retrying with full sanitized input");
+            body = BuildRequestBody(
+                parameters,
+                provider,
+                conversation,
+                allowPreviousResponseId: false);
+            await EmitRequestDebugAsync(
+                parameters,
+                provider,
+                state,
+                context,
+                requestUrl,
+                useWebSocket,
+                body,
+                model,
+                transport);
+            startedAt = Stopwatch.GetTimestamp();
+            parseState = new ResponsesParseState();
+            await ExecuteWebSocketAsync(websocketUrl, body, provider, parseState, state, context, startedAt);
         }
 
         FlushPendingToolCalls(parseState);
@@ -111,6 +135,42 @@ internal static partial class AgentRuntimeOpenAIResponsesProvider
             parseState.ToolCalls,
             parseState.StopReason,
             parseState.Usage);
+    }
+
+    private static async Task EmitRequestDebugAsync(
+        JsonElement parameters,
+        JsonElement provider,
+        AgentRuntimeTools.AgentRuntimeRunState state,
+        WorkerRequestContext context,
+        string requestUrl,
+        bool useWebSocket,
+        string body,
+        string model,
+        string transport)
+    {
+        await AgentRuntimeTools.EmitAsync(
+            state,
+            context,
+            new AgentRuntimeStreamEvent(
+                "request_debug",
+                DebugInfo: new AgentRuntimeRequestDebugInfo(
+                    requestUrl,
+                    useWebSocket ? "WS" : "POST",
+                    BuildDebugHeaders(provider, useWebSocket),
+                    AgentRuntimeDebugPayload.PrepareBody(body, parameters),
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    JsonHelpers.GetString(provider, "providerId"),
+                    JsonHelpers.GetString(provider, "providerBuiltinId"),
+                    model,
+                    ExecutionPath: "sidecar",
+                    Transport: transport)));
+    }
+
+    private static bool IsMissingToolOutputError(Exception ex)
+    {
+        return ex.Message.Contains(
+            "No tool output found for function call",
+            StringComparison.OrdinalIgnoreCase);
     }
 
 }

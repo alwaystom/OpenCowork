@@ -2,6 +2,8 @@ import type { ToolResultContent } from '@renderer/lib/api/types'
 import { coerceAskUserQuestions } from '@renderer/lib/tools/ask-user-tool'
 import { decodeStructuredToolResult } from '@renderer/lib/tools/tool-result-format'
 
+const COMMAND_TOOL_NAMES = new Set(['Bash', 'Shell', 'PowerShell'])
+
 export type SearchToolSummary = {
   kind: 'glob' | 'grep'
   matchCount: number
@@ -223,7 +225,7 @@ export function inputSummary(
     const skillName = input.SkillName ?? input.skillName ?? input.name
     return typeof skillName === 'string' ? skillName.trim() : ''
   }
-  if (name === 'Bash') return summarizeBashInput(input, outputText)
+  if (COMMAND_TOOL_NAMES.has(name)) return summarizeBashInput(input, outputText)
   if (name === 'LS') return summarizeLsInput(input, outputText)
   if (['Read', 'Write', 'SavePlan'].includes(name)) {
     const preview =

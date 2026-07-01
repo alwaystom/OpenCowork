@@ -1,6 +1,7 @@
-import { BrowserWindow, type WebContents } from 'electron'
+import { app, BrowserWindow, type WebContents } from 'electron'
 import { safeSendMessagePackToWindow } from '../window-ipc'
 import { registerMessagePackHandler } from './messagepack-handler'
+import { getNativeWorker } from '../lib/native-worker'
 import {
   createTerminalSession,
   getTerminalSessionSnapshot,
@@ -33,6 +34,34 @@ interface ManagedProcess {
   exited?: boolean
   output: string[]
   cleanup?: () => void
+}
+
+interface NativeWorkerMemorySample {
+  success?: boolean
+  pid?: number | null
+  managedBytes?: number
+  heapBytes?: number
+  fragmentedBytes?: number
+  workingSetBytes?: number
+  error?: string | null
+}
+
+interface ProcessMemorySample {
+  sampledAt: number
+  main: {
+    pid: number
+    memory: NodeJS.MemoryUsage
+  }
+  appMetrics: Array<{
+    pid: number
+    type: string
+    memory: {
+      workingSetKb?: number
+      peakWorkingSetKb?: number
+      privateKb?: number
+    } | null
+  }>
+  nativeWorker: NativeWorkerMemorySample | null
 }
 
 const processes = new Map<string, ManagedProcess>()
@@ -117,6 +146,56 @@ function finalizeManagedProcess(
 }
 
 export function registerProcessManagerHandlers(): void {
+  registerMessagePackHandler<unknown, ProcessMemorySample>(
+    'diagnostics:memory-sample',
+    async () => {
+      const nativeWorker = getNativeWorker()
+      let nativeWorkerMemory: NativeWorkerMemorySample | null = null
+
+      if (nativeWorker.isRunning) {
+        try {
+          nativeWorkerMemory = await nativeWorker.request<NativeWorkerMemorySample>(
+            'worker/memory',
+            {},
+            5_000
+          )
+        } catch (error) {
+          nativeWorkerMemory = {
+            success: false,
+            pid: nativeWorker.processId,
+            error: error instanceof Error ? error.message : String(error)
+          }
+        }
+      } else if (nativeWorker.processId) {
+        nativeWorkerMemory = {
+          success: false,
+          pid: nativeWorker.processId,
+          error: 'Native worker is not connected'
+        }
+      }
+
+      return {
+        sampledAt: Date.now(),
+        main: {
+          pid: process.pid,
+          memory: process.memoryUsage()
+        },
+        appMetrics: app.getAppMetrics().map((metric) => ({
+          pid: metric.pid,
+          type: metric.type,
+          memory: metric.memory
+            ? {
+                workingSetKb: metric.memory.workingSetSize,
+                peakWorkingSetKb: metric.memory.peakWorkingSetSize,
+                privateKb: metric.memory.privateBytes
+              }
+            : null
+        })),
+        nativeWorker: nativeWorkerMemory
+      }
+    }
+  )
+
   registerMessagePackHandler<{
     command: string
     cwd?: string

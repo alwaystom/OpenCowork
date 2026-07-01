@@ -1427,6 +1427,7 @@ interface InputAreaProps {
   hideModeSwitch?: boolean
   modelRoute?: 'main' | 'fast'
   attachedFooter?: boolean
+  fullWidth?: boolean
 }
 
 export function InputArea({
@@ -1445,7 +1446,8 @@ export function InputArea({
   hideGoalSessionBar = false,
   hideModeSwitch = false,
   modelRoute = 'main',
-  attachedFooter = false
+  attachedFooter = false,
+  fullWidth = false
 }: InputAreaProps): React.JSX.Element {
   const { t } = useTranslation('chat')
   const chatView = useUIStore((s) => s.chatView)
@@ -1543,6 +1545,9 @@ export function InputArea({
       Math.min(MAX_INPUT_HEIGHT, Math.floor(window.innerHeight * FALLBACK_MAX_VIEWPORT_RATIO))
     )
   )
+  const composerWidthClass = fullWidth
+    ? 'mx-auto w-full max-w-none'
+    : 'mx-auto w-full max-w-[820px]'
 
   React.useEffect(() => {
     setInputHeight((current) => {
@@ -3583,7 +3588,12 @@ export function InputArea({
   const queuedMessagesPanel =
     queuedMessages.length > 0 ? (
       <>
-        <div className="mx-auto mb-2 w-full max-w-[820px] overflow-hidden rounded-lg border border-border/50 bg-muted/20 shadow-sm backdrop-blur">
+        <div
+          className={cn(
+            composerWidthClass,
+            'mb-2 overflow-hidden rounded-lg border border-border/50 bg-muted/20 shadow-sm backdrop-blur'
+          )}
+        >
           <div className="max-h-40 overflow-y-auto py-1">
             {queuedMessages.map((msg, index) => {
               const isEditing = editingQueueItemId === msg.id
@@ -3901,11 +3911,19 @@ export function InputArea({
       {queuedMessagesPanel}
 
       {!hideGoalSessionBar && draftSessionId && (
-        <GoalSessionBar sessionId={draftSessionId} className="mb-2" />
+        <GoalSessionBar
+          sessionId={draftSessionId}
+          className={cn('mb-2', fullWidth && 'max-w-none')}
+        />
       )}
 
       {hasPendingGoalMode && (
-        <div className="mx-auto mb-2 flex w-full max-w-[820px] items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-1.5 text-xs text-emerald-700 dark:text-emerald-300">
+        <div
+          className={cn(
+            composerWidthClass,
+            'mb-2 flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-1.5 text-xs text-emerald-700 dark:text-emerald-300'
+          )}
+        >
           <Target className="size-3.5 shrink-0" />
           <span>
             {t('input.pendingGoalBanner', {
@@ -3916,7 +3934,7 @@ export function InputArea({
         </div>
       )}
 
-      <div className="mx-auto w-full max-w-[820px]">
+      <div className={composerWidthClass}>
         <div
           ref={containerRef}
           className={cn(

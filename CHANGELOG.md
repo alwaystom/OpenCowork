@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.4] - 2026-07-02
+
+### Fixed
+
+- Removed BOM character from package.json for better compatibility with various tools and parsers.
+- Added `pointer-events-none` to user message locator container to prevent it from intercepting clicks on underlying UI elements.
+
 ## [1.0.3] - 2026-07-02
 
 ### Changed

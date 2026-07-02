@@ -692,7 +692,7 @@ function UserMessageLocator({
     previewItemIndex >= 0 ? getCompactLocatorMarkerTop(previewItemIndex, items.length) : '50%'
 
   return (
-    <div className="absolute right-2 top-1/2 z-20 hidden -translate-y-1/2 md:block">
+    <div className="pointer-events-none absolute right-2 top-1/2 z-20 hidden -translate-y-1/2 md:block">
       <div className="pointer-events-none relative h-[min(52vh,24rem)] w-[min(324px,calc(100vw-3rem))]">
         {previewItem && previewCopy ? (
           <>

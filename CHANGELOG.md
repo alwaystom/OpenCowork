@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.3] - 2026-07-02
+
+### Changed
+
+- Optimized streaming and debug overhead by implementing on-demand caching and batch refresh instead of full recalculation on every increment, reducing O(n²) complexity in main and sidecar processes.
+- Enhanced debug request body handling by upgrading from in-memory truncation to persistent disk storage for better readability of long request bodies.
+- Added constraints for sub-agent and plan mode operations: sub-agents can no longer directly create/execute/approve plans, and plan mode tools are disabled by default in sub-agent contexts.
+- Implemented context injection for plan mode, plan revision, plan execution, plugin channels, system commands, and slash commands to ensure model input consistency with current runtime state.
+- Added prompt cache key truncation and derived sub-agent cache keys for OpenAI Responses API.
+- Added duplicate task deduplication during runtime to prevent identical sub-agent prompts from being executed multiple times.
+
+### Fixed
+
+- Fixed sidecar manager initialization and communication flow.
+- Improved session image export functionality.
+- Updated routing AI provider configuration.
+
 ## [1.0.2] - 2026-07-01
 
 ### Changed

@@ -614,7 +614,7 @@ function ModelFormDialog({
     initial?.responseSummary ?? 'none'
   )
   const [websocketMode, setWebsocketMode] = useState<'auto' | 'disabled'>(
-    initial?.websocketMode ?? 'auto'
+    initial?.websocketMode ?? 'disabled'
   )
   const [enableSystemPromptCache, setEnableSystemPromptCache] = useState(
     initial?.enableSystemPromptCache ?? true
@@ -677,7 +677,7 @@ function ModelFormDialog({
     setEnableComputerUse(model.enableComputerUse ?? false)
     setIcon(model.icon ?? '')
     setResponseSummary(model.responseSummary ?? 'none')
-    setWebsocketMode(model.websocketMode ?? 'auto')
+    setWebsocketMode(model.websocketMode ?? 'disabled')
     setEnableSystemPromptCache(model.enableSystemPromptCache ?? true)
     setCacheTtl(model.cacheTtl ?? '5m')
     setResponsesImageGenerationEnabled(model.responsesImageGeneration?.enabled ?? true)

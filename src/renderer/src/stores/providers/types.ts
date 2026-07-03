@@ -40,6 +40,6 @@ export interface BuiltinProviderPreset {
   ui?: ProviderUiConfig
   /** OpenAI Responses WebSocket endpoint override for this provider preset */
   websocketUrl?: string
-  /** OpenAI Responses transport mode for this provider preset */
+  /** OpenAI Responses transport mode for this provider preset; unset means disabled (opt-in) */
   websocketMode?: 'auto' | 'disabled'
 }

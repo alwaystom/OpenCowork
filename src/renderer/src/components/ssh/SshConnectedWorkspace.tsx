@@ -2,7 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
   ChevronRight,
+  File,
+  FileArchive,
   FileCode2,
+  FileImage,
+  FileJson2,
+  FileSpreadsheet,
+  FileText,
   Folder,
   FolderOpen,
   FolderTree,
@@ -10,13 +16,16 @@ import {
   HardDrive,
   Monitor,
   RefreshCw,
-  TerminalSquare
+  TerminalSquare,
+  X,
+  type LucideIcon
 } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import {
   useSshStore,
   type SshConnection,
   type SshFileEntry,
+  type SshSessionFile,
   type SshTab
 } from '@renderer/stores/ssh-store'
 import { SshTerminal } from './SshTerminal'
@@ -24,6 +33,7 @@ import { SshFileEditor } from './SshFileEditor'
 import { SshTerminalStatusPanel } from './SshTerminalStatusPanel'
 
 const EMPTY_FILE_ENTRIES: SshFileEntry[] = []
+const EMPTY_SESSION_FILES: SshSessionFile[] = []
 const STATUS_PANEL_MIN_WIDTH = 280
 const STATUS_PANEL_MAX_WIDTH = 520
 const STATUS_PANEL_DEFAULT_WIDTH = 340
@@ -60,45 +70,72 @@ function buildPathChain(targetPath: string): string[] {
   return chain
 }
 
-function fileIcon(entry: SshFileEntry): React.ReactNode {
-  if (entry.type === 'directory') {
-    return <Folder className="size-3.5 text-[#f6c453]" />
+function getFileTypeIcon(name: string): { Icon: LucideIcon; color: string } {
+  const ext = name.toLowerCase().split('.').pop() ?? ''
+
+  if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico'].includes(ext)) {
+    return { Icon: FileImage, color: '#c084fc' }
   }
-  return <span className="ml-[2px] text-[11px] text-[#9ca3af]">·</span>
+  if (['json', 'jsonl'].includes(ext)) {
+    return { Icon: FileJson2, color: '#f6c453' }
+  }
+  if (['csv', 'tsv', 'xlsx', 'xls'].includes(ext)) {
+    return { Icon: FileSpreadsheet, color: '#4ade80' }
+  }
+  if (['zip', 'tar', 'gz', 'tgz', '7z', 'rar'].includes(ext)) {
+    return { Icon: FileArchive, color: '#f59e0b' }
+  }
+  if (
+    [
+      'ts',
+      'tsx',
+      'js',
+      'jsx',
+      'py',
+      'go',
+      'rs',
+      'java',
+      'c',
+      'cpp',
+      'h',
+      'sh',
+      'sql',
+      'yaml',
+      'yml',
+      'toml',
+      'html',
+      'css',
+      'scss'
+    ].includes(ext)
+  ) {
+    return { Icon: FileCode2, color: '#60a5fa' }
+  }
+  if (['md', 'txt', 'log', 'env', 'ini', 'conf'].includes(ext)) {
+    return { Icon: FileText, color: '#9ca3af' }
+  }
+  return { Icon: File, color: '#9ca3af' }
 }
 
-function openRemoteFileTab(connection: SshConnection, sessionId: string, filePath: string): void {
-  const store = useSshStore.getState()
-  const existing = store.openTabs.find(
-    (tab) => tab.type === 'file' && tab.connectionId === connection.id && tab.filePath === filePath
-  )
-
-  if (existing) {
-    store.setActiveTab(existing.id)
-    return
+function fileIcon(entry: SshFileEntry): React.ReactNode {
+  if (entry.type === 'directory') {
+    return <Folder className="size-3.5 shrink-0 text-[#f6c453]" />
   }
+  const { Icon, color } = getFileTypeIcon(entry.name)
+  return <Icon className="size-3.5 shrink-0" style={{ color }} />
+}
 
-  const title = filePath.split('/').pop() || filePath
-  store.openTab({
-    id: `ssh-file:${connection.id}:${filePath}`,
-    type: 'file',
-    sessionId,
-    connectionId: connection.id,
-    connectionName: connection.name,
-    title,
-    filePath
-  })
+function openRemoteFileTab(sessionId: string, filePath: string): void {
+  const name = filePath.split('/').pop() || filePath
+  useSshStore.getState().openSessionFile(sessionId, { path: filePath, name })
 }
 
 function ExplorerNode({
-  connection,
   sessionId,
   path,
   label,
   depth,
   currentPath
 }: {
-  connection: SshConnection
   sessionId: string
   path: string
   label: string
@@ -172,7 +209,6 @@ function ExplorerNode({
               return (
                 <ExplorerNode
                   key={entry.path}
-                  connection={connection}
                   sessionId={sessionId}
                   path={entry.path}
                   label={entry.name}
@@ -186,7 +222,7 @@ function ExplorerNode({
               <button
                 key={entry.path}
                 type="button"
-                onClick={() => openRemoteFileTab(connection, sessionId, entry.path)}
+                onClick={() => openRemoteFileTab(sessionId, entry.path)}
                 className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12px] text-[#a1a1aa] transition-colors hover:bg-[#202020] hover:text-[#fafafa]"
                 style={{ paddingLeft: `${30 + depth * 14}px` }}
               >
@@ -283,7 +319,6 @@ function ExplorerPane({
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
         {chain.length > 0 ? (
           <ExplorerNode
-            connection={connection}
             sessionId={sessionId}
             path={chain[0]!}
             label={chain[0] === '/' ? '/' : chain[0]!.split('/').pop() || '/'}
@@ -311,7 +346,6 @@ function ExplorerPane({
 export function SshConnectedWorkspace({
   connection,
   sessionId,
-  activeTab,
   showStatusPanel,
   onCloseStatus
 }: {
@@ -324,9 +358,15 @@ export function SshConnectedWorkspace({
   const [statusPanelWidth, setStatusPanelWidth] = useState(getInitialStatusPanelWidth)
   const [isResizingStatusPanel, setIsResizingStatusPanel] = useState(false)
   const resizeStateRef = useRef({ startX: 0, startWidth: STATUS_PANEL_DEFAULT_WIDTH })
-  const centerTitle =
-    activeTab.type === 'file' ? activeTab.filePath?.split('/').pop() || activeTab.title : '终端'
-  const CenterIcon = activeTab.type === 'file' ? FileCode2 : TerminalSquare
+
+  const sessionFiles = useSshStore((state) => state.sessionFiles[sessionId] ?? EMPTY_SESSION_FILES)
+  const activeSessionFilePath = useSshStore((state) => state.activeSessionFile[sessionId] ?? null)
+  const setActiveSessionFile = useSshStore((state) => state.setActiveSessionFile)
+  const closeSessionFile = useSshStore((state) => state.closeSessionFile)
+
+  const hasOpenFiles = sessionFiles.length > 0
+  const activeFile =
+    sessionFiles.find((file) => file.path === activeSessionFilePath) ?? sessionFiles[0] ?? null
 
   useEffect(() => {
     window.localStorage.setItem(STATUS_PANEL_WIDTH_KEY, String(statusPanelWidth))
@@ -378,9 +418,8 @@ export function SshConnectedWorkspace({
         <div className="flex items-center justify-between border-b border-[#2b2b2b] px-3 py-2">
           <div className="flex items-center gap-2">
             <div className="inline-flex items-center gap-2 rounded-[8px] border border-[#373737] bg-[#171717] px-3 py-1 text-[12px] text-[#6ee787]">
-              <CenterIcon className="size-3.5" />
-              <span className="truncate">{centerTitle}</span>
-              <span className="text-[#8b8b8b]">x</span>
+              <TerminalSquare className="size-3.5" />
+              <span className="truncate">终端</span>
             </div>
           </div>
 
@@ -392,16 +431,65 @@ export function SshConnectedWorkspace({
           ) : null}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-hidden bg-[#0f1120]">
-          {activeTab.type === 'file' && activeTab.filePath ? (
-            <SshFileEditor
-              connectionId={connection.id}
-              filePath={activeTab.filePath}
-              sessionId={sessionId}
-            />
-          ) : (
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div
+            className={cn(
+              'min-w-0 flex-1 overflow-hidden bg-[#0f1120]',
+              hasOpenFiles && 'border-r border-[#2b2b2b]'
+            )}
+          >
             <SshTerminal sessionId={sessionId} connectionName={connection.name} />
-          )}
+          </div>
+
+          {hasOpenFiles ? (
+            <div className="flex min-w-0 flex-1 flex-col bg-[#0f1120]">
+              <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[#2b2b2b] bg-[#141414] px-2 py-1.5">
+                {sessionFiles.map((file) => {
+                  const active = activeFile?.path === file.path
+                  const { Icon, color } = getFileTypeIcon(file.name)
+                  return (
+                    <div
+                      key={file.path}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setActiveSessionFile(sessionId, file.path)}
+                      className={cn(
+                        'group inline-flex max-w-[200px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border px-2.5 py-1 text-[12px] transition-colors',
+                        active
+                          ? 'border-[#3a3a3a] bg-[#1f1f1f] text-[#fafafa]'
+                          : 'border-transparent text-[#a1a1aa] hover:bg-[#1a1a1a] hover:text-[#e5e7eb]'
+                      )}
+                    >
+                      <Icon className="size-3.5 shrink-0" style={{ color }} />
+                      <span className="truncate">{file.name}</span>
+                      <span
+                        role="button"
+                        tabIndex={-1}
+                        className="rounded-full p-0.5 text-[#8b8b8b] opacity-0 transition-opacity hover:text-[#fafafa] group-hover:opacity-100"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          closeSessionFile(sessionId, file.path)
+                        }}
+                      >
+                        <X className="size-3" />
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-hidden">
+                {activeFile ? (
+                  <SshFileEditor
+                    key={activeFile.path}
+                    connectionId={connection.id}
+                    filePath={activeFile.path}
+                    sessionId={sessionId}
+                  />
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 

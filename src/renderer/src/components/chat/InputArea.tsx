@@ -64,6 +64,7 @@ import {
   formatTokens,
   getBillableInputTokens,
   getCacheCreationTokens,
+  getCacheCreationSplit,
   getCacheHitRate
 } from '@renderer/lib/format-tokens'
 import { formatDurationMs } from '@renderer/lib/format-duration'
@@ -514,6 +515,8 @@ interface RuntimeUsageTotals {
   billableInputTokens: number
   cacheReadTokens: number
   cacheCreationTokens: number
+  cacheCreation5mTokens: number
+  cacheCreation1hTokens: number
   inputCost: number | null
   outputCost: number | null
   cacheReadCost: number | null
@@ -569,6 +572,8 @@ function createEmptyRuntimeUsageTotals(): RuntimeUsageTotals {
     billableInputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
+    cacheCreation5mTokens: 0,
+    cacheCreation1hTokens: 0,
     inputCost: null,
     outputCost: null,
     cacheReadCost: null,
@@ -593,6 +598,9 @@ function addUsageToTotals(
   totals.billableInputTokens += getBillableInputForUsage(usage)
   totals.cacheReadTokens += normalizeTokenCount(usage.cacheReadTokens)
   totals.cacheCreationTokens += normalizeTokenCount(getCacheCreationTokens(usage))
+  const cacheCreationSplit = getCacheCreationSplit(usage)
+  totals.cacheCreation5mTokens += normalizeTokenCount(cacheCreationSplit.fiveMinuteTokens)
+  totals.cacheCreation1hTokens += normalizeTokenCount(cacheCreationSplit.oneHourTokens)
   totals.latestRequestTiming = getLatestRequestTiming(usage) ?? totals.latestRequestTiming
 
   const costBreakdown = calculateCostBreakdown(usage, modelCfg)
@@ -696,7 +704,7 @@ function MetricHoverTip({
   label,
   children
 }: {
-  label?: string
+  label?: React.ReactNode
   children: React.ReactElement
 }): React.JSX.Element {
   if (!label) return children
@@ -730,7 +738,7 @@ function RuntimeMetric({
   animate?: boolean
   duration?: number
   suffix?: string
-  title?: string
+  title?: React.ReactNode
 }): React.JSX.Element {
   const body = (
     <span className={cn('shrink-0', title && 'cursor-help')}>
@@ -858,6 +866,8 @@ function ComposerRuntimeStatus({
         cumulativeBillableInputTokens: totals.billableInputTokens,
         cumulativeCacheReadTokens: totals.cacheReadTokens,
         cumulativeCacheCreationTokens: totals.cacheCreationTokens,
+        cumulativeCacheCreation5mTokens: totals.cacheCreation5mTokens,
+        cumulativeCacheCreation1hTokens: totals.cacheCreation1hTokens,
         cumulativeInputCost: totals.inputCost,
         cumulativeOutputCost: totals.outputCost,
         cumulativeCacheReadCost: totals.cacheReadCost,
@@ -928,6 +938,8 @@ function ComposerRuntimeStatus({
     (isStreaming ? Math.max(0, estimatedOutputTokens - live.currentOutputTokens) : 0)
   const cacheReadTokens = live.cumulativeCacheReadTokens
   const cacheCreationTokens = live.cumulativeCacheCreationTokens
+  const cacheCreation5mTokens = live.cumulativeCacheCreation5mTokens
+  const cacheCreation1hTokens = live.cumulativeCacheCreation1hTokens
   const cacheHitRate = getCacheHitRate(inputTokens, cacheReadTokens, cacheCreationTokens)
   const streamingExtraUsage = React.useMemo<TokenUsage | null>(() => {
     if (!isStreaming || !model) return null
@@ -980,7 +992,8 @@ function ComposerRuntimeStatus({
     const cacheReadPrice = model?.cacheHitPrice ?? (inputPrice != null ? inputPrice * 0.1 : null)
     const cacheCreatePrice =
       model?.cacheCreationPrice ?? (inputPrice != null ? inputPrice * 1.25 : null)
-    return { inputPrice, outputPrice, cacheReadPrice, cacheCreatePrice }
+    const cacheCreate1hPrice = inputPrice != null ? inputPrice * 2 : null
+    return { inputPrice, outputPrice, cacheReadPrice, cacheCreatePrice, cacheCreate1hPrice }
   }, [model])
   const buildCostTitle = React.useCallback(
     (label: string, tokens: number, pricePerMillion: number | null): string | undefined => {
@@ -994,6 +1007,52 @@ function ComposerRuntimeStatus({
     },
     [t]
   )
+  // Cache-write tokens are billed at two different TTL rates (5m vs 1h). Split the hover
+  // tooltip so each bucket's tokens and cost are shown separately instead of one lumped total.
+  const cacheCreationTitle = React.useMemo<React.ReactNode>(() => {
+    if (cacheCreationTokens <= 0) return undefined
+    const rows = [
+      {
+        key: '5m',
+        label: t('input.runtimeMetrics.cacheCreate5m', { defaultValue: 'Cache write (5m)' }),
+        tokens: cacheCreation5mTokens,
+        price: metricPricing.cacheCreatePrice
+      },
+      {
+        key: '1h',
+        label: t('input.runtimeMetrics.cacheCreate1h', { defaultValue: 'Cache write (1h)' }),
+        tokens: cacheCreation1hTokens,
+        price: metricPricing.cacheCreate1hPrice
+      }
+    ].filter((row) => row.tokens > 0)
+    if (rows.length === 0) return undefined
+    return (
+      <div className="flex flex-col gap-0.5">
+        {rows.map((row) => {
+          const cost =
+            row.price != null && Number.isFinite(row.price)
+              ? formatCost((row.tokens * row.price) / 1_000_000)
+              : null
+          return (
+            <div key={row.key} className="flex items-center justify-between gap-3 tabular-nums">
+              <span className="text-muted-foreground/70">{row.label}</span>
+              <span>
+                {formatTokens(row.tokens)}
+                {cost ? ` · ${cost}` : ''}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }, [
+    cacheCreationTokens,
+    cacheCreation5mTokens,
+    cacheCreation1hTokens,
+    metricPricing.cacheCreatePrice,
+    metricPricing.cacheCreate1hPrice,
+    t
+  ])
   const latestTps = toFinitePositiveNumber(live.latestRequestTiming?.tps)
   const latestTtftMs = toFinitePositiveNumber(live.latestRequestTiming?.ttftMs)
   const statusView = React.useMemo<RuntimeStatusView>(() => {
@@ -1196,11 +1255,14 @@ function ComposerRuntimeStatus({
         tone="cacheCreate"
         animate={isStreaming}
         duration={620}
-        title={buildCostTitle(
-          t('input.runtimeMetrics.cacheCreate', { defaultValue: 'Cache write' }),
-          cacheCreationTokens,
-          metricPricing.cacheCreatePrice
-        )}
+        title={
+          cacheCreationTitle ??
+          buildCostTitle(
+            t('input.runtimeMetrics.cacheCreate', { defaultValue: 'Cache write' }),
+            cacheCreationTokens,
+            metricPricing.cacheCreatePrice
+          )
+        }
       />
       <span className="shrink-0 text-muted-foreground/35">/</span>
       <RuntimeMetric
@@ -3125,7 +3187,9 @@ export function InputArea({
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>): void => {
-      if (e.nativeEvent.isComposing || isOptimizing) return
+      // keyCode 229 marks the keydown that starts an IME composition, which
+      // fires before nativeEvent.isComposing becomes true.
+      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || isOptimizing) return
 
       if (fileMenuOpen) {
         if (!e.altKey && !e.ctrlKey && !e.metaKey && e.key === 'ArrowDown') {

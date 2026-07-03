@@ -206,6 +206,15 @@ export function PermissionDialog({
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (!toolCall) return
+      // Ignore IME composition keystrokes (keyCode 229 covers the first keydown
+      // of a composition, before isComposing turns true) and keys typed into
+      // editable fields, so y/n shortcuts cannot hijack normal typing.
+      if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return
+      const target = e.target
+      if (target instanceof HTMLElement) {
+        const tagName = target.tagName.toLowerCase()
+        if (tagName === 'textarea' || tagName === 'input' || target.isContentEditable) return
+      }
       if (e.key === 'y' || e.key === 'Y') {
         e.preventDefault()
         onAllow()

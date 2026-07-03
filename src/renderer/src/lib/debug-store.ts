@@ -34,6 +34,12 @@ function stripBodyFields(info: RequestDebugInfo): RequestDebugInfo {
   return rest
 }
 
+function stripInlineBody(info: RequestDebugInfo): RequestDebugInfo {
+  if (info.body === undefined) return info
+  const { body: _body, ...rest } = info
+  return rest
+}
+
 function truncateDebugText(value: string | undefined, max: number): string | undefined {
   if (!value || value.length <= max) return value
   return `${value.slice(0, max)}\n... [truncated, ${value.length} chars total]`
@@ -106,15 +112,21 @@ function mergeTraceIntoDebugInfo(msgId: string, info: RequestDebugInfo): Request
   }
 }
 
-/** In dev mode only one message should retain a request body reference for the debug panel. */
-function stripDebugBodyFromOtherMessages(keepMsgId: string): void {
+/**
+ * Inline bodies are large, so only the newest message keeps one. bodyRef is a
+ * tiny file-reference string and MUST survive on every message — it is what
+ * lets the debug panel load that message's last request body JSON later.
+ */
+function stripInlineDebugBodyFromOtherMessages(keepMsgId: string): void {
   for (const id of _insertionOrder) {
     if (id === keepMsgId) continue
     const t = _store.get(id)
     if (!t?.debugInfo) continue
+    const stripped = stripInlineBody(t.debugInfo)
+    if (stripped === t.debugInfo) continue
     _store.set(id, {
       ...t,
-      debugInfo: stripBodyFields(t.debugInfo)
+      debugInfo: stripped
     })
   }
 }
@@ -148,7 +160,7 @@ export function setLastDebugInfo(msgId: string, info: RequestDebugInfo): void {
   const merged = mergeTraceIntoDebugInfo(msgId, info)
   const debugInfo = devMode ? merged : stripBodyFields(merged)
   if (devMode) {
-    stripDebugBodyFromOtherMessages(msgId)
+    stripInlineDebugBodyFromOtherMessages(msgId)
   }
   setRequestTraceInfo(msgId, {
     debugInfo,

@@ -148,8 +148,14 @@ export async function canSidecarHandle(capability: string): Promise<boolean> {
  */
 export const agentBridge = new AgentBridgeClient()
 
-export async function readSidecarDebugBody(bodyRef: string): Promise<string> {
-  const result = (await agentBridge.request('agent/debug-body-read', { bodyRef })) as {
+export async function readSidecarDebugBody(args: {
+  bodyRef?: string
+  sessionId?: string | null
+}): Promise<string> {
+  const result = (await agentBridge.request('agent/debug-body-read', {
+    ...(args.bodyRef ? { bodyRef: args.bodyRef } : {}),
+    ...(args.sessionId ? { sessionId: args.sessionId } : {})
+  })) as {
     success?: boolean
     body?: string
     error?: string

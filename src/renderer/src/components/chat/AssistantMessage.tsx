@@ -715,11 +715,13 @@ function collectDebugToolCalls(
 function DebugToggleButton({
   debugInfo,
   content,
-  toolResults
+  toolResults,
+  sessionId
 }: {
   debugInfo: RequestDebugInfo
   content: string | ContentBlock[]
   toolResults?: Map<string, { content: ToolResultContent; isError?: boolean }>
+  sessionId?: string | null
 }): React.JSX.Element {
   const [show, setShow] = useState(false)
   const [bodyText, setBodyText] = useState<string | null>(null)
@@ -744,13 +746,13 @@ function DebugToggleButton({
     }
 
     setBodyText(null)
-    if (!debugInfo.bodyRef) {
+    if (!debugInfo.bodyRef && !sessionId) {
       setBodyLoading(false)
       return
     }
 
     setBodyLoading(true)
-    readSidecarDebugBody(debugInfo.bodyRef)
+    readSidecarDebugBody({ bodyRef: debugInfo.bodyRef, sessionId })
       .then((body) => {
         if (!cancelled) {
           setBodyText(body)
@@ -770,7 +772,7 @@ function DebugToggleButton({
     return () => {
       cancelled = true
     }
-  }, [debugInfo.body, debugInfo.bodyRef, show])
+  }, [debugInfo.body, debugInfo.bodyRef, sessionId, show])
 
   const bodyFormatted = (() => {
     if (!bodyText) return null
@@ -3257,6 +3259,7 @@ export function AssistantMessage({
                   debugInfo={debugInfo}
                   content={content}
                   toolResults={toolResults}
+                  sessionId={sessionId}
                 />
               )}
             </div>

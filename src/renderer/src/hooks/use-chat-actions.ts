@@ -558,7 +558,6 @@ const SELECTED_FILE_TEXT_READ_BLOCKED_EXTENSIONS = new Set([
 export interface SendMessageOptions {
   longRunningMode?: boolean
   clearCompletedTasksOnTurnStart?: boolean
-  skipPendingPlanRevision?: boolean
   planExecutionContext?: SidecarPlanExecutionContext
   planRevisionContext?: SidecarPlanRevisionContext
   skipAutoContextCompression?: boolean
@@ -3849,56 +3848,25 @@ export function useChatActions(): {
           useTaskStore.getState().deleteSessionTasks(sessionId)
         }
 
-        const pendingReviewPlan =
-          source === undefined && !options?.skipPendingPlanRevision
-            ? usePlanStore.getState().getPendingReviewPlan(sessionId)
-            : undefined
-        if (pendingReviewPlan) {
-          usePlanStore.getState().rejectPlan(pendingReviewPlan.id)
-          usePlanStore.getState().setActivePlan(pendingReviewPlan.id)
-          useUIStore.getState().enterPlanMode(sessionId)
-        }
-        const pendingPlanRevisionContext = pendingReviewPlan
-          ? {
-              title: pendingReviewPlan.title,
-              filePath: pendingReviewPlan.filePath
-            }
-          : null
-        const effectiveResolvedCommand: ResolvedUserCommand = pendingReviewPlan
-          ? {
-              command: null,
-              userText: text.trim(),
-              titleInput: text.trim()
-            }
-          : resolvedCommand
-        const explicitPlanRevisionContext =
+        // Plan mode is entered only by the user toggle or the agent's EnterPlanMode tool.
+        // An awaiting_review plan must not hijack normal sends — explicit revision goes
+        // through options.planRevisionContext (PlanPanel reject flow).
+        const requestPlanRevisionContext =
           source !== 'continue' && options?.planRevisionContext
             ? {
                 ...options.planRevisionContext,
-                feedback:
-                  options.planRevisionContext.feedback ??
-                  (effectiveResolvedCommand.userText || text)
+                feedback: options.planRevisionContext.feedback ?? (resolvedCommand.userText || text)
               }
             : undefined
-        const requestPlanRevisionContext =
-          source === 'continue'
-            ? undefined
-            : (explicitPlanRevisionContext ??
-              (pendingPlanRevisionContext
-                ? {
-                    ...pendingPlanRevisionContext,
-                    feedback: effectiveResolvedCommand.userText || text
-                  }
-                : undefined))
         const requestPlanExecutionContext =
           source === 'continue' ? undefined : options?.planExecutionContext
         const requestSlashCommandContext =
-          source === 'continue' ? undefined : effectiveResolvedCommand.slashCommandContext
+          source === 'continue' ? undefined : resolvedCommand.slashCommandContext
         const requestSystemCommandContext: SidecarSystemCommandContext | undefined =
-          source !== 'continue' && effectiveResolvedCommand.command
+          source !== 'continue' && resolvedCommand.command
             ? {
-                name: effectiveResolvedCommand.command.name,
-                content: effectiveResolvedCommand.command.content
+                name: resolvedCommand.command.name,
+                content: resolvedCommand.command.content
               }
             : undefined
 
@@ -3922,7 +3890,7 @@ export function useChatActions(): {
         const latestUserInput =
           source === 'continue'
             ? extractLatestUserInput(inMemoryMessages)
-            : effectiveResolvedCommand.userText || text
+            : resolvedCommand.userText || text
         const latestUserHasImages =
           source === 'continue'
             ? latestUserMessageContainsImage(inMemoryMessages)
@@ -4088,7 +4056,7 @@ export function useChatActions(): {
         const selectedFileReadContext =
           shouldAppendUserMessage && source !== 'team'
             ? await buildSelectedFileReadContext({
-                text: effectiveResolvedCommand.userText || text,
+                text: resolvedCommand.userText || text,
                 options,
                 session: sessionSnapshot
               })
@@ -4111,9 +4079,9 @@ export function useChatActions(): {
           const textBlocks: Array<Extract<ContentBlock, { type: 'text' }>> = []
           const hasImages = Boolean(images && images.length > 0)
           const textForUserBlock =
-            effectiveResolvedCommand.userText ||
-            (effectiveResolvedCommand.command ? `/${effectiveResolvedCommand.command.name}` : '') ||
-            (isQueuedInsertion && hasImages && !effectiveResolvedCommand.command
+            resolvedCommand.userText ||
+            (resolvedCommand.command ? `/${resolvedCommand.command.name}` : '') ||
+            (isQueuedInsertion && hasImages && !resolvedCommand.command
               ? QUEUED_IMAGE_ONLY_TEXT
               : '')
 
@@ -4146,7 +4114,7 @@ export function useChatActions(): {
         const session = useChatStore.getState().sessions.find((s) => s.id === sessionId)
         if (shouldAppendUserMessage && session && canAutoGenerateSessionTitle(session.title)) {
           const capturedSessionId = sessionId
-          generateSessionTitle(effectiveResolvedCommand.titleInput, {
+          generateSessionTitle(resolvedCommand.titleInput, {
             workspace: {
               projectId: session.projectId,
               workingFolder: resolveSessionWorkingFolder(session),
@@ -6434,7 +6402,6 @@ export async function sendImplementPlan(planId: string): Promise<void> {
       undefined,
       undefined,
       {
-        skipPendingPlanRevision: true,
         planExecutionContext: {
           filePath: latestPlan.filePath,
           acp: isAcpSession
@@ -6532,7 +6499,6 @@ export async function sendImplementPlanInNewSession(planId: string): Promise<voi
       undefined,
       undefined,
       {
-        skipPendingPlanRevision: true,
         planExecutionContext: {
           filePath: latestPlan.filePath
         }
@@ -6584,7 +6550,6 @@ export function sendPlanRevision(planId: string, feedback: string): void {
     undefined,
     undefined,
     {
-      skipPendingPlanRevision: true,
       enablePlanMode: true,
       planRevisionContext: {
         title: plan.title,

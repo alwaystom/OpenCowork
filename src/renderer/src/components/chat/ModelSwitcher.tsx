@@ -431,7 +431,8 @@ function ModelSettingsPopover({
     [model, providerId]
   )
 
-  const websocketEnabled = (model?.websocketMode ?? providerWebsocketMode ?? 'auto') !== 'disabled'
+  const websocketEnabled =
+    (model?.websocketMode ?? providerWebsocketMode ?? 'disabled') !== 'disabled'
   const responsesImageGenerationEnabled = isResponsesImageGenerationEnabled(
     model?.responsesImageGeneration
   )

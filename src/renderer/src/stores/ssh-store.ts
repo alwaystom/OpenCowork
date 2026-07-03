@@ -61,6 +61,11 @@ export interface SshFileEntry {
   modifyTime: number
 }
 
+export interface SshSessionFile {
+  path: string
+  name: string
+}
+
 export type SshWorkspaceSection =
   | 'hosts'
   | 'keychain'
@@ -510,6 +515,10 @@ interface SshStore {
   openTabs: SshTab[]
   activeTabId: string | null
 
+  // Files opened inside a terminal session (rendered as a split to the right of the terminal)
+  sessionFiles: Record<string, SshSessionFile[]>
+  activeSessionFile: Record<string, string | null>
+
   // File explorer
   fileExplorerOpen: boolean
   fileExplorerPaths: Record<string, string>
@@ -606,6 +615,11 @@ interface SshStore {
   setActiveTab: (tabId: string | null) => void
   replaceTab: (tabId: string, tab: SshTab) => void
 
+  // Session file tabs
+  openSessionFile: (sessionId: string, file: SshSessionFile) => void
+  closeSessionFile: (sessionId: string, filePath: string) => void
+  setActiveSessionFile: (sessionId: string, filePath: string | null) => void
+
   // File explorer
   toggleFileExplorer: () => void
   setFileExplorerPath: (sessionId: string, path: string) => void
@@ -679,6 +693,9 @@ export const useSshStore = create<SshStore>()((set, get) => ({
 
   openTabs: [],
   activeTabId: null,
+
+  sessionFiles: {},
+  activeSessionFile: {},
 
   fileExplorerOpen: false,
   fileExplorerPaths: {},
@@ -1495,10 +1512,16 @@ export const useSshStore = create<SshStore>()((set, get) => ({
       const remainingTabs = s.openTabs.filter((t) => t.sessionId !== sessionId)
       const closedActiveTab =
         s.activeTabId && s.openTabs.find((t) => t.id === s.activeTabId)?.sessionId === sessionId
+      const sessionFiles = { ...s.sessionFiles }
+      const activeSessionFile = { ...s.activeSessionFile }
+      delete sessionFiles[sessionId]
+      delete activeSessionFile[sessionId]
       return {
         sessions: updated,
         activeTerminalId: s.activeTerminalId === sessionId ? null : s.activeTerminalId,
         openTabs: remainingTabs,
+        sessionFiles,
+        activeSessionFile,
         activeTabId: closedActiveTab
           ? (remainingTabs[remainingTabs.length - 1]?.id ?? null)
           : s.activeTabId
@@ -1530,10 +1553,16 @@ export const useSshStore = create<SshStore>()((set, get) => ({
       const remainingTabs = s.openTabs.filter((t) => t.sessionId !== sessionId)
       const closedActiveTab =
         s.activeTabId && s.openTabs.find((t) => t.id === s.activeTabId)?.sessionId === sessionId
+      const sessionFiles = { ...s.sessionFiles }
+      const activeSessionFile = { ...s.activeSessionFile }
+      delete sessionFiles[sessionId]
+      delete activeSessionFile[sessionId]
       return {
         sessions: updated,
         activeTerminalId: s.activeTerminalId === sessionId ? null : s.activeTerminalId,
         openTabs: remainingTabs,
+        sessionFiles,
+        activeSessionFile,
         activeTabId: closedActiveTab
           ? (remainingTabs[remainingTabs.length - 1]?.id ?? null)
           : s.activeTabId
@@ -1588,6 +1617,43 @@ export const useSshStore = create<SshStore>()((set, get) => ({
       const activeTabId = s.activeTabId === tabId ? tab.id : s.activeTabId
       return { openTabs, activeTabId, workspaceSection: 'terminal' }
     })
+  },
+
+  // ── Session file tabs ──
+  openSessionFile: (sessionId, file) => {
+    set((s) => {
+      const current = s.sessionFiles[sessionId] ?? []
+      const exists = current.some((item) => item.path === file.path)
+      return {
+        sessionFiles: exists
+          ? s.sessionFiles
+          : { ...s.sessionFiles, [sessionId]: [...current, file] },
+        activeSessionFile: { ...s.activeSessionFile, [sessionId]: file.path }
+      }
+    })
+  },
+
+  closeSessionFile: (sessionId, filePath) => {
+    set((s) => {
+      const current = s.sessionFiles[sessionId] ?? []
+      const idx = current.findIndex((item) => item.path === filePath)
+      if (idx === -1) return {}
+      const remaining = current.filter((item) => item.path !== filePath)
+      const wasActive = s.activeSessionFile[sessionId] === filePath
+      const nextActive = wasActive
+        ? (remaining[idx]?.path ?? remaining[idx - 1]?.path ?? remaining[0]?.path ?? null)
+        : s.activeSessionFile[sessionId]
+      return {
+        sessionFiles: { ...s.sessionFiles, [sessionId]: remaining },
+        activeSessionFile: { ...s.activeSessionFile, [sessionId]: nextActive }
+      }
+    })
+  },
+
+  setActiveSessionFile: (sessionId, filePath) => {
+    set((s) => ({
+      activeSessionFile: { ...s.activeSessionFile, [sessionId]: filePath }
+    }))
   },
 
   // ── File explorer ──

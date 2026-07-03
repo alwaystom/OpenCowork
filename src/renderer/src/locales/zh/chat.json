@@ -73,6 +73,8 @@
       "cache": "缓存",
       "cacheHit": "缓存命中",
       "cacheCreate": "创建缓存",
+      "cacheCreate5m": "创建缓存（5m）",
+      "cacheCreate1h": "创建缓存（1h）",
       "output": "输出",
       "tps": "TPS",
       "ttft": "首 token",
@@ -169,7 +171,10 @@
     "runningHint": "当前会话正在按该计划实施。",
     "runningInSession": "该计划正在会话“{{title}}”中执行。",
     "openExecutionSession": "打开执行会话",
-    "approvedHint": "该计划已批准。"
+    "approvedHint": "该计划已批准。",
+    "download": "下载计划",
+    "copy": "复制计划",
+    "expand": "在右侧面板展开"
   },
   "guide": {
     "title": "对话页新人引导",

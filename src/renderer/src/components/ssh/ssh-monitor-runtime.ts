@@ -100,10 +100,19 @@ format_cpu_percent() {
 }
 
 collect_network_totals() {
-    awk -F '[: ]+' 'NR > 2 && $1 != "lo" && $1 != "" {
-        rx += $3
-        tx += $11
-        names = names sprintf("%s\\n", $1)
+    awk 'NR > 2 {
+        line = $0
+        sub(/^[ \\t]+/, "", line)
+        colon = index(line, ":")
+        if (colon == 0) next
+        iface = substr(line, 1, colon - 1)
+        if (iface == "lo" || iface == "") next
+        rest = substr(line, colon + 1)
+        sub(/^[ \\t]+/, "", rest)
+        split(rest, fields, /[ \\t]+/)
+        rx += fields[1] + 0
+        tx += fields[9] + 0
+        names = names sprintf("%s\\n", iface)
     }
     END {
         printf "%s\\t%s\\n", rx + 0, tx + 0

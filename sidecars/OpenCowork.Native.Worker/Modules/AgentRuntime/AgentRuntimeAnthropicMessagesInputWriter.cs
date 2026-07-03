@@ -4,6 +4,15 @@ using System.Text.Json;
 
 internal static partial class AgentRuntimeAnthropicMessagesProvider
 {
+    // Claude Opus 4.6+/4.7/4.8, Sonnet 5, and Fable 5 reject assistant message prefill:
+    // the Messages API requires the conversation to end with a user turn, otherwise it
+    // returns HTTP 400 ("This model does not support assistant message prefill. The
+    // conversation must end with a user message."). OpenCowork never intentionally
+    // prefills, so a trailing assistant message is always an artifact of resuming or
+    // continuing a persisted conversation. Append this minimal user turn to keep such
+    // requests valid instead of failing the whole run.
+    private const string AnthropicTrailingUserContinuationText = "Continue.";
+
     private static string BuildRequestBody(
         JsonElement parameters,
         JsonElement provider,
@@ -64,6 +73,7 @@ internal static partial class AgentRuntimeAnthropicMessagesProvider
             : new HashSet<string>(StringComparer.Ordinal);
         var writeState = new AnthropicMessageWriteState(validationStats);
         writer.WriteStartArray();
+        string? lastWrittenRole = null;
         for (var messageIndex = 0; messageIndex < conversation.Count; messageIndex++)
         {
             var message = conversation[messageIndex];
@@ -94,8 +104,33 @@ internal static partial class AgentRuntimeAnthropicMessagesProvider
             writer.WriteEndObject();
             validationStats.WrittenMessages++;
             writeState.EndMessage(role);
+            lastWrittenRole = role;
+        }
+
+        // The Messages API requires the conversation to end with a user turn; a trailing
+        // assistant message triggers a 400 on models that don't support prefill. Append a
+        // continuation user turn when nothing user-role was written last (also covers the
+        // degenerate case where every message was dropped, which the API also rejects).
+        if (lastWrittenRole != "user")
+        {
+            WriteAnthropicTrailingUserMessage(writer);
+            validationStats.WrittenMessages++;
         }
         writer.WriteEndArray();
+    }
+
+    private static void WriteAnthropicTrailingUserMessage(Utf8JsonWriter writer)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("role", "user");
+        writer.WritePropertyName("content");
+        writer.WriteStartArray();
+        writer.WriteStartObject();
+        writer.WriteString("type", "text");
+        writer.WriteString("text", AnthropicTrailingUserContinuationText);
+        writer.WriteEndObject();
+        writer.WriteEndArray();
+        writer.WriteEndObject();
     }
 
     private static bool TryWriteAnthropicMessageContent(

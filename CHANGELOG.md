@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.6] - 2026-07-03
+
+### Added
+
+- Added Anthropic Claude API integration to the native worker with proper message validation and handling for trailing user turns (required by Claude Opus 4.6+, Sonnet 5, and Fable 5).
+- Implemented cache creation token tracking split by time windows (5-minute and 1-hour) for improved cache cost analysis and display.
+
+### Changed
+
+- Removed plan executor from native worker runtime; plan execution now handled through the unified agent loop.
+- Enhanced token usage metrics display with detailed cache creation breakdown and improved cost calculations.
+- Improved SSH workspace connection handling and status monitoring with better error recovery.
+- Refined permission dialog presentation and model switcher UX for better clarity.
+
 ## [1.0.5] - 2026-07-02
 
 ### Fixed

@@ -50,6 +50,31 @@ export function getCacheCreationTokens(usage: Partial<TokenUsage> | null | undef
   return Math.max(direct, detailed)
 }
 
+/**
+ * Split cache-creation (cache write) tokens into 5-minute and 1-hour TTL buckets.
+ * When the provider reports the detailed breakdown (Anthropic's
+ * `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`), those
+ * values are used; any remainder between the combined total and the detailed sum is
+ * attributed to the 5-minute bucket (the default ephemeral TTL). When no breakdown is
+ * available, the whole combined total is treated as 5-minute. The two buckets always
+ * sum back to {@link getCacheCreationTokens}.
+ */
+export function getCacheCreationSplit(usage: Partial<TokenUsage> | null | undefined): {
+  fiveMinuteTokens: number
+  oneHourTokens: number
+} {
+  const total = getCacheCreationTokens(usage)
+  if (!usage || total <= 0) return { fiveMinuteTokens: 0, oneHourTokens: 0 }
+  const oneHourTokens = Math.max(0, usage.cacheCreation1hTokens ?? 0)
+  const hasDetailedBreakdown =
+    usage.cacheCreation5mTokens != null || usage.cacheCreation1hTokens != null
+  const detailedTotal = Math.max(0, usage.cacheCreation5mTokens ?? 0) + oneHourTokens
+  const fiveMinuteTokens = hasDetailedBreakdown
+    ? Math.max(0, usage.cacheCreation5mTokens ?? 0) + Math.max(total - detailedTotal, 0)
+    : total
+  return { fiveMinuteTokens, oneHourTokens }
+}
+
 export function getCacheHitRate(
   billableInputTokens: number,
   cacheReadTokens: number,
@@ -116,14 +141,8 @@ export function resolveCacheCreationCost(
     }
   }
 
-  const hasDetailedBreakdown =
-    usage.cacheCreation5mTokens != null || usage.cacheCreation1hTokens != null
-  const cacheCreation1hTokens = usage.cacheCreation1hTokens ?? 0
-  const detailedCacheCreationTokens = (usage.cacheCreation5mTokens ?? 0) + cacheCreation1hTokens
-  const cacheCreation5mTokens = hasDetailedBreakdown
-    ? (usage.cacheCreation5mTokens ?? 0) +
-      Math.max(totalCacheCreationTokens - detailedCacheCreationTokens, 0)
-    : totalCacheCreationTokens
+  const { fiveMinuteTokens: cacheCreation5mTokens, oneHourTokens: cacheCreation1hTokens } =
+    getCacheCreationSplit(usage)
   const cacheCreation5mPrice =
     model?.cacheCreationPrice ?? (model?.inputPrice != null ? model.inputPrice * 1.25 : null)
   const cacheCreation1hPrice = model?.inputPrice != null ? model.inputPrice * 2 : null

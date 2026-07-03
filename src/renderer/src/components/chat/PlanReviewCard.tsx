@@ -1,9 +1,13 @@
 import * as React from 'react'
 import Markdown from 'react-markdown'
 import {
+  Check,
   CheckCircle2,
   ClipboardList,
+  Copy,
+  Download,
   Loader2,
+  Maximize2,
   MessageSquarePlus,
   Play,
   TriangleAlert
@@ -87,6 +91,26 @@ function buildPlanReviewPayloadFromPlan(plan: Plan | undefined): PlanReviewPaylo
   }
 }
 
+function planDownloadFileName(payload: PlanReviewPayload): string {
+  const base = payload.filePath?.split(/[\\/]/).pop()
+  if (base) return base
+  const slug = payload.title
+    .trim()
+    .replace(/[\\/:*?"<>|\s]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return `${slug || 'plan'}.md`
+}
+
+function downloadPlanMarkdown(filename: string, content: string): void {
+  const blob = new Blob([content], { type: 'text/markdown' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
 function getStatusAppearance(status: PlanStatus): {
   badgeClassName: string
   labelKey: string
@@ -162,6 +186,29 @@ export function PlanReviewCard({
   )
   const isRunning = useAgentStore((s) => s.isSessionActive(activeSessionId)) || hasStreamingMessage
 
+  const [copied, setCopied] = React.useState(false)
+  const contentRef = React.useRef<HTMLDivElement | null>(null)
+  const [contentTruncated, setContentTruncated] = React.useState(false)
+  const planContent = payload?.content ?? ''
+
+  React.useEffect(() => {
+    const el = contentRef.current
+    if (!el) {
+      setContentTruncated(false)
+      return
+    }
+    const measure = (): void => {
+      setContentTruncated(el.scrollHeight > el.clientHeight + 1)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    if (el.firstElementChild) {
+      observer.observe(el.firstElementChild)
+    }
+    return () => observer.disconnect()
+  }, [planContent])
+
   const isProcessing = !payload && (status === 'running' || status === 'streaming' || isLive)
   const isError = status === 'error' || isStructuredToolErrorText(outputText)
   const displayStatus: PlanStatus =
@@ -199,6 +246,34 @@ export function PlanReviewCard({
     )
   }
 
+  const hasPlanContent = planContent.trim().length > 0
+
+  const handleCopyPlan = (): void => {
+    void navigator.clipboard.writeText(planContent)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1500)
+  }
+
+  const handleDownloadPlan = (): void => {
+    downloadPlanMarkdown(planDownloadFileName(payload), planContent)
+  }
+
+  const handleExpandPlan = (): void => {
+    const targetSessionId = sessionId ?? activeSessionId ?? undefined
+    const uiStore = useUIStore.getState()
+    if (payload.filePath) {
+      const session = useChatStore.getState().sessions.find((s) => s.id === targetSessionId)
+      uiStore.openFilePreview(
+        payload.filePath,
+        'preview',
+        session?.sshConnectionId ?? undefined,
+        targetSessionId
+      )
+      return
+    }
+    uiStore.openMarkdownPreview(payload.title, planContent, targetSessionId)
+  }
+
   return (
     <div className="my-3 rounded-2xl border border-border/70 bg-background/80 p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
@@ -213,16 +288,58 @@ export function PlanReviewCard({
             </div>
           )}
         </div>
-        <Badge
-          variant="outline"
-          className={cn('shrink-0 text-[10px] font-medium', statusAppearance.badgeClassName)}
-        >
-          {t(statusAppearance.labelKey, { defaultValue: statusAppearance.defaultValue })}
-        </Badge>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Badge
+            variant="outline"
+            className={cn('text-[10px] font-medium', statusAppearance.badgeClassName)}
+          >
+            {t(statusAppearance.labelKey, { defaultValue: statusAppearance.defaultValue })}
+          </Badge>
+          {hasPlanContent && (
+            <>
+              <button
+                type="button"
+                onClick={handleDownloadPlan}
+                className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title={t('planReview.download', { defaultValue: 'Download plan' })}
+                aria-label={t('planReview.download', { defaultValue: 'Download plan' })}
+              >
+                <Download className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={handleCopyPlan}
+                className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title={t('planReview.copy', { defaultValue: 'Copy plan' })}
+                aria-label={t('planReview.copy', { defaultValue: 'Copy plan' })}
+              >
+                {copied ? (
+                  <Check className="size-3.5 text-emerald-500" />
+                ) : (
+                  <Copy className="size-3.5" />
+                )}
+              </button>
+            </>
+          )}
+          {(hasPlanContent || payload.filePath) && (
+            <button
+              type="button"
+              onClick={handleExpandPlan}
+              className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              title={t('planReview.expand', { defaultValue: 'Expand in side panel' })}
+              aria-label={t('planReview.expand', { defaultValue: 'Expand in side panel' })}
+            >
+              <Maximize2 className="size-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
-      {payload.content.trim() ? (
-        <div className="mt-4 max-h-[420px] overflow-y-auto rounded-xl border border-border/60 bg-muted/15 px-4 py-3">
+      {hasPlanContent ? (
+        <div
+          ref={contentRef}
+          className="relative mt-4 max-h-[220px] overflow-hidden rounded-xl border border-border/60 bg-muted/15 px-4 py-3"
+        >
           <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mb-2 prose-headings:mt-4 prose-p:my-2 prose-ul:my-2 prose-li:my-1 prose-pre:bg-muted prose-pre:px-3 prose-pre:py-2 prose-code:before:content-none prose-code:after:content-none">
             <Markdown
               remarkPlugins={MARKDOWN_REMARK_PLUGINS}
@@ -231,6 +348,9 @@ export function PlanReviewCard({
               {payload.content}
             </Markdown>
           </div>
+          {contentTruncated && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 rounded-b-xl bg-gradient-to-t from-background to-transparent" />
+          )}
         </div>
       ) : payload.message ? (
         <div className="mt-4 rounded-xl border border-border/60 bg-muted/15 px-4 py-3 text-sm text-muted-foreground">

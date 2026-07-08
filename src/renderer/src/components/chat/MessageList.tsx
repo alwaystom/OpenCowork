@@ -1303,8 +1303,10 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
 
   const canAutoScroll = React.useCallback(() => {
     const mode = autoScrollModeRef.current
-    return mode === 'user' || (mode === 'stream' && canSessionTriggerStreamingAutoScroll)
-  }, [canSessionTriggerStreamingAutoScroll])
+    return (
+      mode === 'user' || (mode === 'stream' && canSessionTriggerStreamingAutoScroll && isAtBottom)
+    )
+  }, [canSessionTriggerStreamingAutoScroll, isAtBottom])
 
   const markProgrammaticScroll = React.useCallback(() => {
     programmaticScrollUntilRef.current = window.performance.now() + PROGRAMMATIC_SCROLL_GUARD_MS
@@ -1328,7 +1330,6 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     const threshold = isSessionOutputting
       ? STREAMING_AUTO_SCROLL_BOTTOM_THRESHOLD
       : AUTO_SCROLL_BOTTOM_THRESHOLD
-    const nextAtBottom = distanceToBottom <= threshold
     const previousOffset = lastScrollOffsetRef.current
     const currentOffset = ref.scrollTop
     const scrolledUp = currentOffset < previousOffset - BOTTOM_SCROLL_CORRECTION_EPSILON
@@ -1343,9 +1344,17 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
       : threshold
     if (scrolledUp && distanceToBottom > followReleaseThreshold && !isProgrammaticScroll) {
       autoScrollModeRef.current = 'off'
-    } else if (nextAtBottom && isSessionOutputting && autoScrollModeRef.current === 'off') {
+      setIsAtBottom(false)
+      return
+    }
+
+    const physicallyAtBottom = distanceToBottom <= threshold
+    if (physicallyAtBottom && isSessionOutputting && autoScrollModeRef.current === 'off') {
       autoScrollModeRef.current = 'stream'
     }
+
+    const nextAtBottom =
+      physicallyAtBottom || (isSessionOutputting && autoScrollModeRef.current === 'stream')
 
     setIsAtBottom((prev) => (prev === nextAtBottom ? prev : nextAtBottom))
   }, [isSessionOutputting])

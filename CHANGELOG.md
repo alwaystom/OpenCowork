@@ -2,10 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.1.1] - 2026-07-08
+## [1.0.9] - 2026-07-09
 
 ### Added
 
+- AI Coding support for ClaudeCode and Codex, including dedicated settings panels, configuration storage, localized UI strings, and launch helpers.
+- Project terminal actions for starting ClaudeCode or Codex sessions from the bottom dock with configured commands, permissions, and environment overrides.
+- Right-panel terminal tabs so local and SSH terminal sessions can move between the bottom dock and the right-side workspace.
+- Fullscreen support for the bottom terminal dock, allowing the dock to take over the conversation area and restore the previous height when exiting.
+- Introduced the Creative Production extension with MCP assets, enabling material import and step-by-step creation workflows including mood board, shot/style intake, ad/scene/offer/logo exploration, and generative polish across 9 skill packs.
+- Added local prototype setup and user context management to the product-design extension, supporting prototype bootstrap scripts, user context initialization, communication protocols, and key overrides.
+- Collapsible tool-call execution runs in chat, allowing tool-call output to be collapsed for a cleaner conversation view.
 - Web search block component for displaying server-side web search results with expandable source list
 - Native worker auto-restart with exponential backoff and heartbeat monitoring
 - Lifecycle events (onReconnect, onDisconnect) for native worker management
@@ -16,32 +23,26 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Reworked the title-bar folder action to open the existing right-side Files tab instead of a separate working-folder panel.
+- Restored the closed right panel to a zero-width state without a persistent border or icon rail.
+- Improved bottom terminal sizing and xterm layout so maximized or resized terminals keep their bottom row visible.
+- Refactored code structure for improved readability and maintainability.
+- Renamed product design references and removed related dead code.
 - Refactored AssistantMessage to simplify debug tool call handling
 - Improved native worker resilience with crash logging and stderr capture
 - Enhanced provider store with built-in search capability detection
+
+### Technical
+
+- Extended terminal session state with surface tracking and environment overrides for AI Coding launches.
+- Added shared ClaudeCode/Codex launch resolution utilities and settings routes.
+- Creative Production extension ships with a standalone MCP server, widget assets, and Python scripts.
+- Product Design extension includes prototype templates, bootstrap scripts, and user context management tooling.
 
 ### Fixed
 
 - Native worker now properly restarts on unexpected crashes with exponential backoff
 - Web search blocks update in place instead of stacking duplicates
-
-## [1.1.0] - 2026-07-07
-
-### Added
-
-- Introduced the Creative Production extension with MCP assets, enabling material import and step-by-step creation workflows including mood board, shot/style intake, ad/scene/offer/logo exploration, and generative polish across 9 skill packs.
-- Added local prototype setup and user context management to the product-design extension, supporting prototype bootstrap scripts, user context initialization, communication protocols, and key overrides.
-- Collapsible tool-call execution runs in chat, allowing tool-call output to be collapsed for a cleaner conversation view.
-
-### Changed
-
-- Refactored code structure for improved readability and maintainability.
-- Renamed product design references and removed related dead code.
-
-### Technical
-
-- Creative Production extension ships with a standalone MCP server, widget assets, and Python scripts.
-- Product Design extension includes prototype templates, bootstrap scripts, and user context management tooling.
 
 ## [1.0.8] - 2026-07-05
 

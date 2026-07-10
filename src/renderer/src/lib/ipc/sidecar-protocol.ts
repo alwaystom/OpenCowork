@@ -12,6 +12,7 @@ import type { CompressionConfig } from '../agent/context-compression'
 import { resolveProviderUserAgent } from '../api/api-user-agent'
 import { summarizeToolInputForHistory } from '../tools/tool-input-sanitizer'
 import { useSettingsStore } from '@renderer/stores/settings-store'
+import { useProviderStore } from '@renderer/stores/provider-store'
 import {
   toPermissionPolicySnapshot,
   type PermissionPolicySnapshot
@@ -213,6 +214,13 @@ export interface SidecarAgentRunRequest {
   tools: SidecarToolDefinition[]
   webSearch?: SidecarWebSearchConfig
   imagePluginProvider?: SidecarProviderConfig
+  /**
+   * Provider config sub-agents (Task tool) run on. Sourced from the configured fast model
+   * so delegated work uses the cheaper/faster model; the native worker prefers it over the
+   * parent provider unless a per-call or agent-frontmatter model override is present. Falls
+   * back to the main model when no distinct fast model is configured.
+   */
+  subAgentProvider?: SidecarProviderConfig
   runId?: string
   sessionId?: string
   workingFolder?: string
@@ -624,6 +632,11 @@ export function buildSidecarAgentRunRequest(args: {
   const imagePluginProvider = args.imagePluginProvider
     ? mapSidecarProvider(args.imagePluginProvider)
     : null
+  // Route sub-agents (Task tool) to the configured fast model. getFastProviderConfig()
+  // resolves the explicit fast selection, else a sensible default, else the main model —
+  // so this degrades to today's parent-inherit behavior when no distinct fast model is set.
+  const fastProviderConfig = useProviderStore.getState().getFastProviderConfig()
+  const subAgentProvider = fastProviderConfig ? mapSidecarProvider(fastProviderConfig) : null
   const planRevision = normalizePlanRevision(args.planRevision)
   const planExecution = normalizePlanExecution(args.planExecution)
   const slashCommand = normalizeSlashCommand(args.slashCommand)
@@ -645,6 +658,7 @@ export function buildSidecarAgentRunRequest(args: {
     tools: args.tools.map(mapSidecarTool),
     ...(webSearch ? { webSearch } : {}),
     ...(imagePluginProvider ? { imagePluginProvider } : {}),
+    ...(subAgentProvider ? { subAgentProvider } : {}),
     ...(args.runId ? { runId: args.runId } : {}),
     ...(args.sessionId ? { sessionId: args.sessionId } : {}),
     ...(args.workingFolder ? { workingFolder: args.workingFolder } : {}),

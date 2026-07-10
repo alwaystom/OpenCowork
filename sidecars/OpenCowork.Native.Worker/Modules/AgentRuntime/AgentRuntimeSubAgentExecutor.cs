@@ -681,9 +681,24 @@ internal static partial class AgentRuntimeSubAgentExecutor
                 ? provider
                 : throw new InvalidOperationException("Task requires a provider config.");
 
+        // An explicit per-call model override or an agent's frontmatter model pins the model
+        // onto the parent provider (same endpoint/key). Otherwise sub-agents default to the
+        // configured fast provider — a full provider config the renderer attaches, which may
+        // live on a different provider than the parent. Falls back to the parent when no fast
+        // provider is configured.
+        var hasExplicitModel =
+            !string.IsNullOrWhiteSpace(modelOverride) || !string.IsNullOrWhiteSpace(definition.Model);
+        var baseProvider = parentProvider;
+        if (!hasExplicitModel &&
+            parameters.TryGetProperty("subAgentProvider", out var fastProvider) &&
+            fastProvider.ValueKind == JsonValueKind.Object)
+        {
+            baseProvider = fastProvider;
+        }
+
         return CreateObject(writer =>
         {
-            foreach (var property in parentProvider.EnumerateObject())
+            foreach (var property in baseProvider.EnumerateObject())
             {
                 if (property.NameEquals("systemPrompt") ||
                     property.NameEquals("temperature") ||
@@ -695,6 +710,8 @@ internal static partial class AgentRuntimeSubAgentExecutor
                 property.WriteTo(writer);
             }
 
+            // Prompt-cache key stays namespaced to the parent run so sibling sub-agents of the
+            // same definition can share cached context, independent of which provider they run on.
             if (ShouldSetSubAgentPromptCacheKey(parentProvider) &&
                 JsonHelpers.GetString(parentProvider, "promptCacheKey") is { Length: > 0 } parentPromptCacheKey)
             {
@@ -712,7 +729,7 @@ internal static partial class AgentRuntimeSubAgentExecutor
             {
                 writer.WriteString("model", definition.Model);
             }
-            else if (JsonHelpers.GetString(parentProvider, "model") is { Length: > 0 } model)
+            else if (JsonHelpers.GetString(baseProvider, "model") is { Length: > 0 } model)
             {
                 writer.WriteString("model", model);
             }
@@ -720,7 +737,7 @@ internal static partial class AgentRuntimeSubAgentExecutor
             {
                 writer.WriteNumber("temperature", definition.Temperature.Value);
             }
-            else if (parentProvider.TryGetProperty("temperature", out var temperature))
+            else if (baseProvider.TryGetProperty("temperature", out var temperature))
             {
                 writer.WritePropertyName("temperature");
                 temperature.WriteTo(writer);

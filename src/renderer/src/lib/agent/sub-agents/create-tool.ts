@@ -181,7 +181,7 @@ export function createTaskTool(_providerGetter: () => ProviderConfig): ToolHandl
               model: {
                 type: 'string',
                 description:
-                  'Optional model override for this agent. If not specified, inherits from the parent. Prefer a faster/cheaper model for quick, straightforward tasks.'
+                  'Optional model override for this agent. If not specified, the teammate runs on the configured fast model. Set a stronger model here only for hard tasks that need it.'
               },
               task_id: {
                 type: 'string',

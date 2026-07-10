@@ -2,6 +2,7 @@ import type { BuiltinProviderPreset } from './types'
 
 export const routinAiPreset: BuiltinProviderPreset = {
   builtinId: 'routin-ai',
+  version: 1,
   name: 'Routin AI',
   type: 'openai-chat',
   defaultBaseUrl: 'https://api.routin.ai/v1',
@@ -1673,9 +1674,10 @@ export const routinAiPreset: BuiltinProviderPreset = {
 /** Model IDs for Routin 套餐（https://api.routin.ai/plan/v1）：Codex 全系、GPT-5.4 系、Claude 全系 */
 const ROUTIN_AI_PLAN_MODEL_ORDER = [
   'gpt-5.3-codex-spark',
-  'gpt-5.4-mini',
-  'gpt-5.4',
   'gpt-5.5',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.6-sol',
   'claude-fable-5',
   'claude-sonnet-5',
   'claude-opus-4-8',
@@ -1691,6 +1693,7 @@ const routinAiModelById = new Map(routinAiPreset.defaultModels.map((m) => [m.id,
 
 export const routinAiPlanPreset: BuiltinProviderPreset = {
   builtinId: 'routin-ai-plan',
+  version: 1,
   name: 'Routin AI（套餐）',
   type: 'openai-chat',
   defaultBaseUrl: 'https://api.routin.ai/plan/v1',

@@ -2,6 +2,7 @@ import type { BuiltinProviderPreset } from './types'
 
 export const anthropicPreset: BuiltinProviderPreset = {
   builtinId: 'anthropic',
+  version: 1,
   name: 'Anthropic',
   type: 'anthropic',
   defaultBaseUrl: 'https://api.anthropic.com',

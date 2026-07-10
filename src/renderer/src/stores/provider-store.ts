@@ -14,7 +14,7 @@ import type { BuiltinProviderPreset } from './providers'
 import { resolveCopilotApiBaseUrl, resolveCopilotModelId } from '../lib/auth/copilot'
 import { normalizeResponsesImageGenerationConfig } from '../lib/api/responses-image-generation'
 import { resolveProviderUserAgent } from '../lib/api/api-user-agent'
-import { configStorage } from '../lib/ipc/config-storage'
+import { aiProviderStorage } from '../lib/ipc/ai-provider-storage'
 import { useSettingsStore } from './settings-store'
 
 export { builtinProviderPresets }
@@ -80,6 +80,11 @@ function cloneManagedModelConfig(model: ManagedModelConfig): ManagedModelConfig 
   return cloneValue(model)
 }
 
+function normalizePresetVersion(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  return Math.max(0, Math.floor(value))
+}
+
 function toManagedModelConfig(model: AIModelConfig): ManagedModelConfig {
   const cloned = cloneModelConfig(model)
   const id = cloned.id.trim()
@@ -108,69 +113,6 @@ function getManagedModelFromCollection(
 ): ManagedModelConfig | undefined {
   const modelKey = normalizeModelKey(modelId)
   return managedModels.find((model) => model.normalizedKey === modelKey)
-}
-
-function scoreManagedModelRichness(model: AIModelConfig | ManagedModelConfig): number {
-  const candidate = model as AIModelConfig
-  const keys: Array<keyof AIModelConfig> = [
-    'type',
-    'category',
-    'icon',
-    'contextLength',
-    'enableExtendedContextCompression',
-    'contextCompressionThreshold',
-    'maxOutputTokens',
-    'inputPrice',
-    'outputPrice',
-    'cacheCreationPrice',
-    'cacheHitPrice',
-    'premiumRequestMultiplier',
-    'availablePlans',
-    'supportsVision',
-    'supportsFunctionCall',
-    'supportsThinking',
-    'supportsComputerUse',
-    'enableComputerUse',
-    'enableBuiltinSearch',
-    'thinkingConfig',
-    'responseSummary',
-    'responsesImageGeneration',
-    'enablePromptCache',
-    'enableSystemPromptCache',
-    'cacheTtl',
-    'requestOverrides',
-    'serviceTier',
-    'websocketUrl',
-    'websocketMode'
-  ]
-
-  let score = 0
-  for (const key of keys) {
-    if (!isMissingModelValue(candidate[key])) {
-      score += 1
-    }
-  }
-
-  if (candidate.thinkingConfig?.bodyParams) {
-    score += Object.keys(candidate.thinkingConfig.bodyParams).length
-  }
-  if (candidate.thinkingConfig?.disabledBodyParams) {
-    score += Object.keys(candidate.thinkingConfig.disabledBodyParams).length
-  }
-  if (candidate.thinkingConfig?.reasoningEffortLevels?.length) {
-    score += candidate.thinkingConfig.reasoningEffortLevels.length
-  }
-  if (candidate.requestOverrides?.headers) {
-    score += Object.keys(candidate.requestOverrides.headers).length
-  }
-  if (candidate.requestOverrides?.body) {
-    score += Object.keys(candidate.requestOverrides.body).length
-  }
-  if (candidate.requestOverrides?.omitBodyKeys?.length) {
-    score += candidate.requestOverrides.omitBodyKeys.length
-  }
-
-  return score
 }
 
 function mergeMissingValue(target: unknown, source: unknown): { value: unknown; changed: boolean } {
@@ -234,13 +176,53 @@ function collectBuiltinManagedModels(): ManagedModelConfig[] {
     for (const model of preset.defaultModels) {
       const candidate = toManagedModelConfig(model)
       const existing = managedByKey.get(candidate.normalizedKey)
-      if (!existing || scoreManagedModelRichness(candidate) > scoreManagedModelRichness(existing)) {
+      if (!existing) {
         managedByKey.set(candidate.normalizedKey, candidate)
+        continue
       }
+
+      // Provider order defines the canonical values. Later presets only enrich fields the
+      // canonical model does not define, so one extra capability cannot replace its context.
+      managedByKey.set(
+        candidate.normalizedKey,
+        mergeManagedModelMissingFields(existing, candidate).model
+      )
     }
   }
 
   return Array.from(managedByKey.values())
+}
+
+function replaceManagedModelsForUpgradedPresets(
+  existingModels: ManagedModelConfig[],
+  tombstones: string[],
+  upgradedPresets: BuiltinProviderPreset[]
+): Pick<ProviderStore, 'managedModels' | 'managedModelTombstones'> {
+  const builtinModels = collectBuiltinManagedModels()
+  const builtinByKey = new Map(builtinModels.map((model) => [model.normalizedKey, model] as const))
+  const upgradedKeys = new Set(
+    upgradedPresets.flatMap((preset) =>
+      preset.defaultModels.map((model) => normalizeModelKey(model.id))
+    )
+  )
+  const deprecatedKeys = new Set(
+    upgradedPresets.flatMap((preset) =>
+      (preset.deprecatedModelIds ?? []).map((modelId) => normalizeModelKey(modelId))
+    )
+  )
+  const replacementKeys = new Set([...upgradedKeys, ...deprecatedKeys])
+  const replacementModels = Array.from(upgradedKeys)
+    .map((modelKey) => builtinByKey.get(modelKey))
+    .filter((model): model is ManagedModelConfig => Boolean(model))
+  const preservedModels = existingModels.filter(
+    (model) => !replacementKeys.has(model.normalizedKey)
+  )
+
+  return {
+    managedModels: sortManagedModels([...preservedModels, ...replacementModels]),
+    // A newer preset intentionally restores models previously removed from that preset's defaults.
+    managedModelTombstones: tombstones.filter((modelKey) => !replacementKeys.has(modelKey))
+  }
 }
 
 function sortManagedModels(models: ManagedModelConfig[]): ManagedModelConfig[] {
@@ -338,6 +320,7 @@ function createProviderFromPreset(preset: BuiltinProviderPreset): AIProvider {
     enabled: preset.defaultEnabled ?? false,
     models,
     builtinId: preset.builtinId,
+    presetVersion: preset.version,
     createdAt: Date.now(),
     requiresApiKey: preset.requiresApiKey ?? true,
     ...(preset.useSystemProxy !== undefined ? { useSystemProxy: preset.useSystemProxy } : {}),
@@ -561,6 +544,64 @@ function mergeBuiltinModels(
   return merged
 }
 
+function restoreBuiltinProviderModels(
+  provider: AIProvider,
+  preset: BuiltinProviderPreset
+): AIProvider {
+  const existingByKey = new Map(
+    provider.models.map((model) => [normalizeModelKey(model.id), model] as const)
+  )
+  const presetKeys = new Set(preset.defaultModels.map((model) => normalizeModelKey(model.id)))
+  const deprecatedKeys = new Set(
+    (preset.deprecatedModelIds ?? []).map((modelId) => normalizeModelKey(modelId))
+  )
+  const models = preset.defaultModels.map((presetModel) => {
+    const existingModel = existingByKey.get(normalizeModelKey(presetModel.id))
+    const restoredModel = omitUnsupportedDisabledThinkingParams(cloneModelConfig(presetModel))
+    return existingModel ? { ...restoredModel, enabled: existingModel.enabled } : restoredModel
+  })
+
+  for (const existingModel of provider.models) {
+    const modelKey = normalizeModelKey(existingModel.id)
+    if (!presetKeys.has(modelKey) && !deprecatedKeys.has(modelKey)) {
+      models.push(existingModel)
+    }
+  }
+
+  return { ...provider, models, presetVersion: preset.version }
+}
+
+function upgradeBuiltinProviderFromPreset(
+  provider: AIProvider,
+  preset: BuiltinProviderPreset
+): AIProvider {
+  const restored = restoreBuiltinProviderModels(provider, preset)
+  const defaultModel = preset.defaultModel
+    ? (resolveModelIdByKey(restored.models, preset.defaultModel) ?? preset.defaultModel)
+    : undefined
+
+  // Keep credentials and authentication state from the persisted provider, but let the newer
+  // built-in preset own its endpoint, protocol, defaults, and built-in model specifications.
+  return {
+    ...restored,
+    name: preset.name.trim(),
+    type: preset.type,
+    baseUrl: preset.defaultBaseUrl.trim(),
+    requiresApiKey: preset.requiresApiKey ?? true,
+    useSystemProxy: preset.useSystemProxy,
+    userAgent: preset.userAgent,
+    defaultModel,
+    authMode: preset.authMode ?? 'apiKey',
+    oauthConfig: preset.oauthConfig ? cloneValue(preset.oauthConfig) : undefined,
+    channelConfig: preset.channelConfig ? cloneValue(preset.channelConfig) : undefined,
+    requestOverrides: preset.requestOverrides ? cloneValue(preset.requestOverrides) : undefined,
+    instructionsPrompt: preset.instructionsPrompt,
+    ui: preset.ui ? cloneValue(preset.ui) : undefined,
+    websocketUrl: preset.websocketUrl,
+    websocketMode: preset.websocketMode
+  }
+}
+
 function resolveProviderDefaultModelId(provider: AIProvider): string {
   const defaultModelId = provider.defaultModel
     ? resolveModelIdByKey(provider.models, provider.defaultModel)
@@ -691,6 +732,8 @@ interface ProviderStore {
   addManagedModel: (model: AIModelConfig) => void
   updateManagedModel: (modelId: string, model: AIModelConfig) => void
   removeManagedModel: (modelId: string) => void
+  /** Restore global defaults and matching built-in provider copies without touching credentials. */
+  resetModelConfigurationToDefaults: () => void
   getManagedModelById: (modelId: string) => ManagedModelConfig | null
   addModel: (providerId: string, model: AIModelConfig) => void
   updateModel: (providerId: string, modelId: string, patch: Partial<AIModelConfig>) => void
@@ -1007,6 +1050,25 @@ export const useProviderStore = create<ProviderStore>()(
           return {
             managedModels,
             managedModelTombstones: Array.from(tombstones)
+          }
+        }),
+
+      resetModelConfigurationToDefaults: () =>
+        set((state) => {
+          const managedModels = sortManagedModels(collectBuiltinManagedModels())
+          const presetById = new Map(
+            builtinProviderPresets.map((preset) => [preset.builtinId, preset] as const)
+          )
+          const providers = state.providers.map((provider) => {
+            const preset = provider.builtinId ? presetById.get(provider.builtinId) : undefined
+            return preset ? restoreBuiltinProviderModels(provider, preset) : provider
+          })
+
+          return {
+            managedModels,
+            managedModelTombstones: [],
+            providers,
+            ...buildNormalizedProviderState(state, providers)
           }
         }),
 
@@ -1541,7 +1603,7 @@ export const useProviderStore = create<ProviderStore>()(
     }),
     {
       name: 'opencowork-providers',
-      storage: createJSONStorage(() => configStorage),
+      storage: createJSONStorage(() => aiProviderStorage),
       partialize: (state) => ({
         providers: state.providers,
         managedModels: state.managedModels,
@@ -1655,7 +1717,25 @@ function migrateLegacyOAuthProviders(): void {
  */
 function ensureBuiltinPresets(): void {
   migrateLegacyOAuthProviders()
+  const currentProviders = useProviderStore.getState().providers
+  const upgradedPresets = builtinProviderPresets.filter((preset) => {
+    const existing = currentProviders.find((provider) => provider.builtinId === preset.builtinId)
+    return Boolean(existing && preset.version > normalizePresetVersion(existing.presetVersion))
+  })
+
+  if (upgradedPresets.length > 0) {
+    const state = useProviderStore.getState()
+    useProviderStore.setState(
+      replaceManagedModelsForUpgradedPresets(
+        state.managedModels,
+        state.managedModelTombstones,
+        upgradedPresets
+      )
+    )
+  }
+  // Add models from other presets without overwriting their locally managed values.
   syncManagedModelsWithBuiltins()
+
   for (const preset of builtinProviderPresets) {
     const existing = useProviderStore
       .getState()
@@ -1665,6 +1745,20 @@ function ensureBuiltinPresets(): void {
       const provider = createProviderFromPreset(preset)
       useProviderStore.getState().addProvider(provider)
     } else {
+      const localPresetVersion = normalizePresetVersion(existing.presetVersion)
+      if (preset.version > localPresetVersion) {
+        const upgraded = upgradeBuiltinProviderFromPreset(existing, preset)
+        const { id: _id, ...patch } = upgraded
+        void _id
+        useProviderStore.getState().updateProvider(existing.id, patch)
+        continue
+      }
+
+      // Never downgrade persisted built-in configuration when an older app is opened.
+      if (localPresetVersion > preset.version) {
+        continue
+      }
+
       // Sync provider-level fields from preset (e.g. requiresApiKey, userAgent, defaultModel)
       const patch: Partial<Omit<AIProvider, 'id'>> = {}
       if (existing.requiresApiKey !== (preset.requiresApiKey ?? true)) {

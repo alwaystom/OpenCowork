@@ -1,5 +1,4 @@
 import { nanoid } from 'nanoid'
-import { readConfig } from '../ipc/secure-key-store'
 import { readSettings } from '../ipc/settings-handlers'
 import type {
   ToolCallState,
@@ -9,7 +8,7 @@ import type {
 export type { ToolCallState, InteractiveAgentEvent }
 import type { RequestDebugInfoWire } from '../../shared/agent-stream-protocol'
 import { decodeAgentStreamEnvelope } from '../../shared/messagepack/agent-stream-codec'
-import { getNativeSshConnectionPayload } from '../ipc/ssh-handlers'
+import { getNativeSshConnectionPayload } from '../ipc/ssh-connection-payload'
 import {
   getBundledResourceDirCandidates,
   nativeUserContentRequest
@@ -28,6 +27,7 @@ import {
 } from '../db/cron-dao'
 import { getNativeAgentRuntimeManager } from '../ipc/native-agent-runtime'
 import { getDefaultApiUserAgent, resolveApiUserAgent } from '../lib/api-user-agent'
+import { readPersistedProviderStore } from '../lib/ai-provider-store'
 import { runHooks } from '../hooks/hooks-service'
 import {
   collectHookContextTexts,
@@ -411,7 +411,6 @@ type PersistedProvidersState = {
 }
 
 async function getPersistedProvidersState(): Promise<PersistedProvidersState> {
-  const root = await readConfig()
   return (
     decodePersistedStoreState<{
       providers: AIProviderConfigRecord[]
@@ -419,7 +418,7 @@ async function getPersistedProvidersState(): Promise<PersistedProvidersState> {
       activeModelId?: string
       activeFastProviderId?: string | null
       activeFastModelId?: string
-    }>(root['opencowork-providers']) ?? { providers: [] }
+    }>(readPersistedProviderStore()) ?? { providers: [] }
   )
 }
 

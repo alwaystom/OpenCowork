@@ -636,6 +636,8 @@ export interface AIProvider {
   enabled: boolean
   models: AIModelConfig[]
   builtinId?: string
+  /** Built-in preset version most recently applied to this persisted provider. */
+  presetVersion?: number
   createdAt: number
   /** Whether this provider requires an API key. Defaults to true when omitted. */
   requiresApiKey?: boolean

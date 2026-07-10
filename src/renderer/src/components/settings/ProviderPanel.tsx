@@ -195,6 +195,10 @@ function normalizePositiveInteger(value: unknown): number | undefined {
   return undefined
 }
 
+function toRoundedTokenThousands(value: number): number {
+  return Math.round(value / 1_000)
+}
+
 function readDiscoveredModelInteger(
   model: Record<string, unknown>,
   keys: string[]
@@ -3320,14 +3324,14 @@ function ProviderConfigPanel({ provider }: { provider: AIProvider }): React.JSX.
                           {model.contextLength && (
                             <span className="rounded-full bg-muted/45 px-2 py-0.5">
                               {t('provider.modelMetaContext', {
-                                count: Math.round(model.contextLength / 1024)
+                                count: toRoundedTokenThousands(model.contextLength)
                               })}
                             </span>
                           )}
                           {model.maxOutputTokens && (
                             <span className="rounded-full bg-muted/45 px-2 py-0.5">
                               {t('provider.modelMetaOutput', {
-                                count: Math.round(model.maxOutputTokens / 1024)
+                                count: toRoundedTokenThousands(model.maxOutputTokens)
                               })}
                             </span>
                           )}
@@ -3498,6 +3502,9 @@ export function ModelManagementPanel(): React.JSX.Element {
   const addManagedModel = useProviderStore((s) => s.addManagedModel)
   const updateManagedModel = useProviderStore((s) => s.updateManagedModel)
   const removeManagedModel = useProviderStore((s) => s.removeManagedModel)
+  const resetModelConfigurationToDefaults = useProviderStore(
+    (s) => s.resetModelConfigurationToDefaults
+  )
 
   const [modelSearch, setModelSearch] = useState('')
   const [providerFilter, setProviderFilter] = useState(ALL_PROVIDER_FILTER)
@@ -3571,11 +3578,28 @@ export function ModelManagementPanel(): React.JSX.Element {
     return true
   }
 
+  const handleRestoreManagedModelDefaults = async (): Promise<void> => {
+    const ok = await confirm({
+      title: t('provider.modelManagementRestoreDefaultsConfirm'),
+      description: t('provider.modelManagementRestoreDefaultsDesc'),
+      confirmLabel: t('provider.modelManagementRestoreDefaults'),
+      variant: 'destructive'
+    })
+    if (!ok) return
+
+    resetModelConfigurationToDefaults()
+    setModelSearch('')
+    setProviderFilter(ALL_PROVIDER_FILTER)
+    setEditingModel(null)
+    setEditingThinkingModel(null)
+    toast.success(t('provider.modelManagementRestoreDefaultsDone'))
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-2xl bg-background shadow-sm">
       <div className="shrink-0 border-b bg-muted/10 px-5 py-4">
         <div className="flex flex-col gap-4">
-          <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="flex min-w-0 items-start gap-3">
               <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border bg-background text-primary shadow-xs">
                 <Layers className="size-4" />
@@ -3589,15 +3613,26 @@ export function ModelManagementPanel(): React.JSX.Element {
                 </p>
               </div>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1.5 rounded-lg px-3 text-xs"
-              onClick={() => setAddModelOpen(true)}
-            >
-              <Plus className="size-3.5" />
-              {t('provider.addModel')}
-            </Button>
+            <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 rounded-lg px-3 text-xs text-muted-foreground"
+                onClick={() => void handleRestoreManagedModelDefaults()}
+              >
+                <RefreshCw className="size-3.5" />
+                {t('provider.modelManagementRestoreDefaults')}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 rounded-lg px-3 text-xs"
+                onClick={() => setAddModelOpen(true)}
+              >
+                <Plus className="size-3.5" />
+                {t('provider.addModel')}
+              </Button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
@@ -3845,14 +3880,14 @@ export function ModelManagementPanel(): React.JSX.Element {
                         {model.contextLength && (
                           <span className="rounded-full bg-muted/45 px-2 py-0.5">
                             {t('provider.modelMetaContext', {
-                              count: Math.round(model.contextLength / 1024)
+                              count: toRoundedTokenThousands(model.contextLength)
                             })}
                           </span>
                         )}
                         {model.maxOutputTokens && (
                           <span className="rounded-full bg-muted/45 px-2 py-0.5">
                             {t('provider.modelMetaOutput', {
-                              count: Math.round(model.maxOutputTokens / 1024)
+                              count: toRoundedTokenThousands(model.maxOutputTokens)
                             })}
                           </span>
                         )}

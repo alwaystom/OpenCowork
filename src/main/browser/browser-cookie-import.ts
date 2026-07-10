@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, readFileSync, rmSync } from 'fs'
 import { createHash, createDecipheriv, pbkdf2Sync } from 'crypto'
 import { join } from 'path'
 import { platform } from 'os'
-import Database from 'better-sqlite3'
+import type BetterSqlite3 from 'better-sqlite3'
 import {
   getBuiltInBrowserSession,
   resolveDetectedBrowserProfile,
@@ -62,6 +62,21 @@ const KEYCHAIN_ACCOUNT_BY_BROWSER: Record<ConcreteBrowserUserDataSource, string>
 }
 
 class CookieImportError extends Error {}
+
+// Load better-sqlite3 lazily so an ABI-mismatched native binding surfaces as a
+// clear import-cookies error instead of crashing browser-handler registration.
+function loadSqlite(): typeof BetterSqlite3 {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('better-sqlite3') as typeof BetterSqlite3
+  } catch (error) {
+    throw new CookieImportError(
+      `The SQLite reader could not be loaded. Reinstall the app or run "npm run postinstall" to rebuild native modules. (${
+        error instanceof Error ? error.message : String(error)
+      })`
+    )
+  }
+}
 
 function locateCookieDatabase(profilePath: string): string | null {
   // Newer Chromium keeps the cookie store under Network/; older builds keep it at the profile root.
@@ -251,6 +266,7 @@ function readCookieRows(cookieDbPath: string): RawCookieRow[] {
   // The live cookie DB is locked while the browser runs; work on a copy.
   copyFileSync(cookieDbPath, scratchCopy)
   try {
+    const Database = loadSqlite()
     const db = new Database(scratchCopy, { readonly: true, fileMustExist: true })
     try {
       return db

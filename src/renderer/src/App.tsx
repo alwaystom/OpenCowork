@@ -67,6 +67,10 @@ import {
   subscribeGlobalMemoryUpdates,
   type GlobalMemorySnapshot
 } from './lib/agent/memory-files'
+import {
+  OPEN_COWORK_RELEASES_LATEST_URL,
+  type AppDistribution
+} from '../../shared/app-distribution'
 
 // Register synchronous viewers immediately at startup
 registerAllViewers()
@@ -114,6 +118,19 @@ interface AvailableUpdate {
   currentVersion: string
   newVersion: string
   releaseNotes: string
+  distribution: AppDistribution
+  supportsAutoInstall: boolean
+  releaseUrl: string
+}
+
+function normalizeDistribution(value: unknown): AppDistribution {
+  return value === 'green' ? 'green' : 'installer'
+}
+
+function normalizeReleaseUrl(value: unknown): string {
+  return typeof value === 'string' && value.startsWith('https://')
+    ? value
+    : OPEN_COWORK_RELEASES_LATEST_URL
 }
 
 function isSshWindowView(): boolean {
@@ -685,9 +702,18 @@ function App(): React.JSX.Element {
   // Listen for app update notifications from main process
   useEffect(() => {
     const offUpdateAvailable = ipcClient.on('update:available', (data: unknown) => {
-      const d = data as { currentVersion: string; newVersion: string; releaseNotes: string }
+      const d = data as {
+        currentVersion: string
+        newVersion: string
+        releaseNotes: string
+        distribution?: unknown
+        supportsAutoInstall?: unknown
+        releaseUrl?: unknown
+      }
       const currentVersion = normalizeVersion(d.currentVersion)
       const newVersion = normalizeVersion(d.newVersion)
+      const distribution = normalizeDistribution(d.distribution)
+      const supportsAutoInstall = d.supportsAutoInstall !== false
 
       if (compareVersions(newVersion, currentVersion) <= 0) {
         console.log(
@@ -705,7 +731,10 @@ function App(): React.JSX.Element {
       setAvailableUpdate({
         currentVersion,
         newVersion,
-        releaseNotes: d.releaseNotes || ''
+        releaseNotes: d.releaseNotes || '',
+        distribution,
+        supportsAutoInstall,
+        releaseUrl: normalizeReleaseUrl(d.releaseUrl)
       })
       setDownloadedUpdateVersion(null)
       setInstallingUpdate(false)
@@ -765,6 +794,11 @@ function App(): React.JSX.Element {
 
   const handleUpdateNow = async (): Promise<void> => {
     if (!availableUpdate || updateDownloadPending) {
+      return
+    }
+
+    if (!availableUpdate.supportsAutoInstall) {
+      await ipcClient.invoke(IPC.SHELL_OPEN_EXTERNAL, availableUpdate.releaseUrl)
       return
     }
 
@@ -866,6 +900,27 @@ function App(): React.JSX.Element {
 
   const hasUpdateNotice = Boolean(availableUpdate || downloadedUpdateVersion)
   const updateDialogVersion = downloadedUpdateVersion ?? availableUpdate?.newVersion ?? ''
+  const manualUpdateAvailable = Boolean(availableUpdate && !availableUpdate.supportsAutoInstall)
+  const updateDialogDescription = downloadedUpdateVersion
+    ? t('app.update.readyDescription')
+    : updateDownloadPending
+      ? typeof updateDownloadProgress === 'number'
+        ? t('app.update.downloadingProgress', { progress: Math.round(updateDownloadProgress) })
+        : t('app.update.downloading')
+      : manualUpdateAvailable
+        ? t('app.update.manualDescription')
+        : t('app.update.availableDescription')
+  const updateDialogActionLabel = downloadedUpdateVersion
+    ? installingUpdate
+      ? t('app.update.installing')
+      : t('app.update.actions.installNow')
+    : updateDownloadPending
+      ? typeof updateDownloadProgress === 'number'
+        ? t('app.update.downloadingProgress', { progress: Math.round(updateDownloadProgress) })
+        : t('app.update.downloading')
+      : manualUpdateAvailable
+        ? t('app.update.actions.openDownloadPage')
+        : t('app.update.actions.updateNow')
 
   if (sshWindowView) {
     return (
@@ -981,17 +1036,7 @@ function App(): React.JSX.Element {
             </div>
 
             <DialogFooter className="border-t px-6 py-4 sm:justify-between">
-              <div className="text-xs text-muted-foreground">
-                {downloadedUpdateVersion
-                  ? t('app.update.readyDescription')
-                  : updateDownloadPending
-                    ? typeof updateDownloadProgress === 'number'
-                      ? t('app.update.downloadingProgress', {
-                          progress: Math.round(updateDownloadProgress)
-                        })
-                      : t('app.update.downloading')
-                    : t('app.update.availableDescription')}
-              </div>
+              <div className="text-xs text-muted-foreground">{updateDialogDescription}</div>
               <div className="flex flex-col-reverse gap-2 sm:flex-row">
                 <Button
                   variant="outline"
@@ -1017,17 +1062,7 @@ function App(): React.JSX.Element {
                   {(updateDownloadPending || installingUpdate) && (
                     <Loader2 className="mr-2 size-4 animate-spin" />
                   )}
-                  {downloadedUpdateVersion
-                    ? installingUpdate
-                      ? t('app.update.installing')
-                      : t('app.update.actions.installNow')
-                    : updateDownloadPending
-                      ? typeof updateDownloadProgress === 'number'
-                        ? t('app.update.downloadingProgress', {
-                            progress: Math.round(updateDownloadProgress)
-                          })
-                        : t('app.update.downloading')
-                      : t('app.update.actions.updateNow')}
+                  {updateDialogActionLabel}
                 </Button>
               </div>
             </DialogFooter>

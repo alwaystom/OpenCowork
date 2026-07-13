@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-07-14
+
+### Added
+
+- Added a SubAgents workspace and runtime management panel for viewing active, completed, and historical sub-agent runs with their details and context.
+- Added Windows no-install ZIP distribution support for users who prefer portable builds.
+
+### Changed
+
+- Improved SubAgents navigation, history loading, concurrency state, permission context, and localization across the workspace.
+- Updated update handling so Windows no-install builds direct users to manual release downloads instead of using the installer auto-update flow.
+
+### Fixed
+
+- Added a safe one-time retry for OpenAI Responses requests interrupted before the first streaming event, avoiding duplicate streamed output or tool execution.
+- Prevented Windows no-install packages from contaminating installer update metadata.
+
 ## [1.1.0] - 2026-07-10
 
 ### Added

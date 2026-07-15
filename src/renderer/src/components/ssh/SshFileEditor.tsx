@@ -18,6 +18,7 @@ interface SshFileEditorProps {
   connectionId: string
   filePath: string
   sessionId?: string
+  active?: boolean
 }
 
 function tryParseReadError(value: string): string | null {
@@ -36,7 +37,8 @@ function tryParseReadError(value: string): string | null {
 export function SshFileEditor({
   connectionId,
   filePath,
-  sessionId
+  sessionId,
+  active = true
 }: SshFileEditorProps): React.JSX.Element {
   const { t } = useTranslation('ssh')
   const [content, setContent] = React.useState('')
@@ -124,6 +126,8 @@ export function SshFileEditor({
   }, [modified, saving, connectionId, filePath, content, t])
 
   React.useEffect(() => {
+    if (!active) return
+
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return
       event.preventDefault()
@@ -132,7 +136,7 @@ export function SshFileEditor({
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleSave])
+  }, [active, handleSave])
 
   const handleChange = React.useCallback((value: string) => {
     if (suppressChangeRef.current) {

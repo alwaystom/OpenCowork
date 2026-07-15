@@ -251,6 +251,8 @@
     "emptyGroupsDesc": "左侧仅显示你主动创建的分组。点击“新建分组”开始整理主机。",
     "showLogs": "显示日志",
     "notifications": "通知",
+    "monitor": "监控",
+    "sessionTabs": "会话标签",
     "currentSession": "终端会话",
     "personalVault": "主机配置",
     "newHostHint": "创建一个新的 SSH 主机配置。",

@@ -5467,28 +5467,28 @@ export function useChatActions(): {
                     const closeThinkTagMatch = hasThinkingDelta
                       ? chunk.match(/<\s*\/\s*think\s*>/i)
                       : null
-                    const keepThinkingOpen = hasThinkingDelta && !closeThinkTagMatch
-                    if (!keepThinkingOpen) {
-                      if (closeThinkTagMatch && closeThinkTagMatch.index !== undefined) {
-                        const beforeClose = chunk.slice(0, closeThinkTagMatch.index)
-                        const afterClose = chunk.slice(
-                          closeThinkTagMatch.index + closeThinkTagMatch[0].length
-                        )
-                        if (beforeClose) {
-                          streamDeltaBuffer.pushThinking(beforeClose)
-                        }
-                        streamDeltaBuffer.flushNow()
-                        thinkingDone = true
-                        completeRuntimeThinking(sessionId!, assistantMsgId)
-                        if (afterClose) {
-                          streamDeltaBuffer.pushText(afterClose)
-                        }
-                        break
+                    if (closeThinkTagMatch && closeThinkTagMatch.index !== undefined) {
+                      const beforeClose = chunk.slice(0, closeThinkTagMatch.index)
+                      const afterClose = chunk.slice(
+                        closeThinkTagMatch.index + closeThinkTagMatch[0].length
+                      )
+                      if (beforeClose) {
+                        streamDeltaBuffer.pushThinking(beforeClose)
                       }
-                      thinkingDone = true
                       streamDeltaBuffer.flushNow()
+                      thinkingDone = true
                       completeRuntimeThinking(sessionId!, assistantMsgId)
+                      if (afterClose) {
+                        streamDeltaBuffer.pushText(afterClose)
+                      }
+                      break
                     }
+                    // Structured thinking and visible text are separate stream channels.
+                    // The first text delta is therefore also the thinking boundary even
+                    // when the provider does not emit a literal </think> marker.
+                    thinkingDone = true
+                    streamDeltaBuffer.flushNow()
+                    completeRuntimeThinking(sessionId!, assistantMsgId)
                   }
                   streamDeltaBuffer.pushText(event.text)
                   break
@@ -7138,28 +7138,28 @@ async function runSimpleChat(
           if (!thinkingDone) {
             const chunk = event.text ?? ''
             const closeThinkTagMatch = hasThinkingDelta ? chunk.match(/<\s*\/\s*think\s*>/i) : null
-            const keepThinkingOpen = hasThinkingDelta && !closeThinkTagMatch
-            if (!keepThinkingOpen) {
-              if (closeThinkTagMatch && closeThinkTagMatch.index !== undefined) {
-                const beforeClose = chunk.slice(0, closeThinkTagMatch.index)
-                const afterClose = chunk.slice(
-                  closeThinkTagMatch.index + closeThinkTagMatch[0].length
-                )
-                if (beforeClose) {
-                  streamDeltaBuffer.pushThinking(beforeClose)
-                }
-                streamDeltaBuffer.flushNow()
-                thinkingDone = true
-                completeRuntimeThinking(sessionId, assistantMsgId)
-                if (afterClose) {
-                  streamDeltaBuffer.pushText(afterClose)
-                }
-                break
+            if (closeThinkTagMatch && closeThinkTagMatch.index !== undefined) {
+              const beforeClose = chunk.slice(0, closeThinkTagMatch.index)
+              const afterClose = chunk.slice(
+                closeThinkTagMatch.index + closeThinkTagMatch[0].length
+              )
+              if (beforeClose) {
+                streamDeltaBuffer.pushThinking(beforeClose)
               }
-              thinkingDone = true
               streamDeltaBuffer.flushNow()
+              thinkingDone = true
               completeRuntimeThinking(sessionId, assistantMsgId)
+              if (afterClose) {
+                streamDeltaBuffer.pushText(afterClose)
+              }
+              break
             }
+            // Structured thinking and visible text are separate stream channels.
+            // The first text delta is therefore also the thinking boundary even
+            // when the provider does not emit a literal </think> marker.
+            thinkingDone = true
+            streamDeltaBuffer.flushNow()
+            completeRuntimeThinking(sessionId, assistantMsgId)
           }
           streamDeltaBuffer.pushText(event.text!)
           break

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   ChevronDown,
   ChevronRight,
@@ -355,6 +356,7 @@ export function SshConnectedWorkspace({
   showStatusPanel: boolean
   onCloseStatus: () => void
 }): React.JSX.Element {
+  const { t } = useTranslation('ssh')
   const [statusPanelWidth, setStatusPanelWidth] = useState(getInitialStatusPanelWidth)
   const [isResizingStatusPanel, setIsResizingStatusPanel] = useState(false)
   const resizeStateRef = useRef({ startX: 0, startWidth: STATUS_PANEL_DEFAULT_WIDTH })
@@ -364,9 +366,8 @@ export function SshConnectedWorkspace({
   const setActiveSessionFile = useSshStore((state) => state.setActiveSessionFile)
   const closeSessionFile = useSshStore((state) => state.closeSessionFile)
 
-  const hasOpenFiles = sessionFiles.length > 0
-  const activeFile =
-    sessionFiles.find((file) => file.path === activeSessionFilePath) ?? sessionFiles[0] ?? null
+  const activeFile = sessionFiles.find((file) => file.path === activeSessionFilePath) ?? null
+  const terminalActive = activeFile === null
 
   useEffect(() => {
     window.localStorage.setItem(STATUS_PANEL_WIDTH_KEY, String(statusPanelWidth))
@@ -415,81 +416,110 @@ export function SshConnectedWorkspace({
       <ExplorerPane connection={connection} sessionId={sessionId} />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center justify-between border-b border-[#2b2b2b] px-3 py-2">
-          <div className="flex items-center gap-2">
-            <div className="inline-flex items-center gap-2 rounded-[8px] border border-[#373737] bg-[#171717] px-3 py-1 text-[12px] text-[#6ee787]">
+        <div className="flex shrink-0 items-center border-b border-[#2b2b2b] bg-[#141414] px-2 py-1.5">
+          <div
+            role="tablist"
+            aria-label={t('workspace.sessionTabs', { defaultValue: 'Session tabs' })}
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={terminalActive}
+              onClick={() => setActiveSessionFile(sessionId, null)}
+              className={cn(
+                'inline-flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-[8px] border px-2.5 text-[12px] transition-colors',
+                terminalActive
+                  ? 'border-[#3a3a3a] bg-[#1f1f1f] text-[#6ee787]'
+                  : 'border-transparent text-[#a1a1aa] hover:bg-[#1a1a1a] hover:text-[#e5e7eb]'
+              )}
+            >
               <TerminalSquare className="size-3.5" />
-              <span className="truncate">终端</span>
-            </div>
+              <span className="truncate">{t('terminalLabel', { defaultValue: 'Terminal' })}</span>
+            </button>
+
+            {sessionFiles.map((file) => {
+              const active = activeFile?.path === file.path
+              const { Icon, color } = getFileTypeIcon(file.name)
+              return (
+                <div
+                  key={file.path}
+                  className={cn(
+                    'group inline-flex h-7 max-w-[200px] shrink-0 items-center rounded-[8px] border transition-colors',
+                    active
+                      ? 'border-[#3a3a3a] bg-[#1f1f1f] text-[#fafafa]'
+                      : 'border-transparent text-[#a1a1aa] hover:bg-[#1a1a1a] hover:text-[#e5e7eb]'
+                  )}
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    title={file.path}
+                    onClick={() => setActiveSessionFile(sessionId, file.path)}
+                    className="flex min-w-0 items-center gap-1.5 py-1 pl-2.5"
+                  >
+                    <Icon className="size-3.5 shrink-0" style={{ color }} />
+                    <span className="truncate">{file.name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t('terminal.closeTab', {
+                      defaultValue: 'Close {{name}}',
+                      name: file.name
+                    })}
+                    className={cn(
+                      'mr-1 ml-0.5 rounded-full p-0.5 text-[#8b8b8b] opacity-0 transition-opacity hover:bg-[#303030] hover:text-[#fafafa] group-hover:opacity-100',
+                      active && 'opacity-100'
+                    )}
+                    onClick={() => closeSessionFile(sessionId, file.path)}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              )
+            })}
           </div>
 
           {showStatusPanel ? (
-            <div className="inline-flex items-center gap-2 rounded-[8px] border border-[#373737] bg-[#171717] px-3 py-1 text-[12px] text-[#6ee787]">
+            <div className="ml-2 inline-flex h-7 shrink-0 items-center gap-2 rounded-[8px] border border-[#373737] bg-[#171717] px-3 text-[12px] text-[#6ee787]">
               <Monitor className="size-3.5" />
-              <span>监控</span>
+              <span>{t('workspace.monitor', { defaultValue: 'Monitor' })}</span>
             </div>
           ) : null}
         </div>
 
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0f1120]">
           <div
             className={cn(
-              'min-w-0 flex-1 overflow-hidden bg-[#0f1120]',
-              hasOpenFiles && 'border-r border-[#2b2b2b]'
+              'absolute inset-0 overflow-hidden bg-[#0f1120]',
+              !terminalActive && 'invisible pointer-events-none'
             )}
+            aria-hidden={!terminalActive}
           >
             <SshTerminal sessionId={sessionId} connectionName={connection.name} />
           </div>
 
-          {hasOpenFiles ? (
-            <div className="flex min-w-0 flex-1 flex-col bg-[#0f1120]">
-              <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[#2b2b2b] bg-[#141414] px-2 py-1.5">
-                {sessionFiles.map((file) => {
-                  const active = activeFile?.path === file.path
-                  const { Icon, color } = getFileTypeIcon(file.name)
-                  return (
-                    <div
-                      key={file.path}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setActiveSessionFile(sessionId, file.path)}
-                      className={cn(
-                        'group inline-flex max-w-[200px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border px-2.5 py-1 text-[12px] transition-colors',
-                        active
-                          ? 'border-[#3a3a3a] bg-[#1f1f1f] text-[#fafafa]'
-                          : 'border-transparent text-[#a1a1aa] hover:bg-[#1a1a1a] hover:text-[#e5e7eb]'
-                      )}
-                    >
-                      <Icon className="size-3.5 shrink-0" style={{ color }} />
-                      <span className="truncate">{file.name}</span>
-                      <span
-                        role="button"
-                        tabIndex={-1}
-                        className="rounded-full p-0.5 text-[#8b8b8b] opacity-0 transition-opacity hover:text-[#fafafa] group-hover:opacity-100"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          closeSessionFile(sessionId, file.path)
-                        }}
-                      >
-                        <X className="size-3" />
-                      </span>
-                    </div>
-                  )
-                })}
+          {sessionFiles.map((file) => {
+            const active = activeFile?.path === file.path
+            return (
+              <div
+                key={file.path}
+                className={cn(
+                  'absolute inset-0 overflow-hidden bg-[#0f1120]',
+                  !active && 'invisible pointer-events-none'
+                )}
+                aria-hidden={!active}
+              >
+                <SshFileEditor
+                  connectionId={connection.id}
+                  filePath={file.path}
+                  sessionId={sessionId}
+                  active={active}
+                />
               </div>
-
-              <div className="min-h-0 flex-1 overflow-hidden">
-                {activeFile ? (
-                  <SshFileEditor
-                    key={activeFile.path}
-                    connectionId={connection.id}
-                    filePath={activeFile.path}
-                    sessionId={sessionId}
-                  />
-                ) : null}
-              </div>
-            </div>
-          ) : null}
+            )
+          })}
         </div>
       </div>
 

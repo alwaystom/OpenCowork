@@ -3546,6 +3546,12 @@ internal static class OpenAIChatRuntime
 
     private static bool TryReadUsage(JsonElement usage, out AgentRuntimeTokenUsage tokenUsage)
     {
+        if (usage.ValueKind != JsonValueKind.Object)
+        {
+            tokenUsage = default!;
+            return false;
+        }
+
         var inputTokens = ReadInt(usage, "prompt_tokens");
         var outputTokens = ReadInt(usage, "completion_tokens");
         var cachedTokens = ReadChatCacheReadTokens(usage);

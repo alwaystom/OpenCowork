@@ -2,7 +2,7 @@
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { useShallow } from 'zustand/react/shallow'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual'
 import { MessageSquare, CircleHelp, Briefcase, Code2, ShieldCheck, ArrowDown } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ContentBlock, ToolResultContent, UnifiedMessage } from '@renderer/lib/api/types'
@@ -258,7 +258,6 @@ const STREAMING_AUTO_SCROLL_BOTTOM_THRESHOLD = 80
 const STREAMING_AUTO_SCROLL_STOP_THRESHOLD = 240
 const TAIL_STATIC_MESSAGE_COUNT = 4
 const TAIL_LIVE_MESSAGE_COUNT = 6
-const INITIAL_SCROLL_SETTLE_FRAMES = 2
 const FOLLOW_BOTTOM_SETTLE_FRAMES = 3
 const BOTTOM_SCROLL_CORRECTION_EPSILON = 2
 const AUTO_SCROLL_MIN_DELTA = 24
@@ -272,6 +271,7 @@ const OLDER_MESSAGE_LOAD_SCROLL_THRESHOLD = 72
 const MIN_RENDERABLE_HISTORY_ROWS = 3
 const VIRTUAL_ROW_ESTIMATED_HEIGHT = 180
 const VIRTUAL_ROW_OVERSCAN = 8
+const INITIAL_TAIL_RENDER_COUNT = 32
 const EMPTY_ORCHESTRATION_STATE = { runs: [], byId: new Map(), byMessageId: new Map() }
 const MESSAGE_COLUMN_CLASS = 'mx-auto w-full max-w-[820px] px-5'
 const MESSAGE_COLUMN_COMPACT_CLASS = 'mx-auto w-full max-w-[720px] px-5'
@@ -1477,8 +1477,15 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
 
   const listRef = React.useRef<HTMLDivElement | null>(null)
   const containerRef = React.useRef<HTMLDivElement | null>(null)
-  const pendingInitialScrollSessionIdRef = React.useRef<string | null>(null)
+  const virtualContentRef = React.useRef<HTMLDivElement | null>(null)
+  const renderedSessionIdRef = React.useRef<string | null>(activeSessionId)
+  const pendingInitialScrollSessionIdRef = React.useRef<string | null>(activeSessionId)
+  if (renderedSessionIdRef.current !== activeSessionId) {
+    renderedSessionIdRef.current = activeSessionId
+    pendingInitialScrollSessionIdRef.current = activeSessionId
+  }
   const autoScrollModeRef = React.useRef<AutoScrollMode>('off')
+  const initialTailReleaseFrameRef = React.useRef<number | null>(null)
   const scheduledScrollFrameRef = React.useRef<number | null>(null)
   const scheduledAssistantRailSyncRef = React.useRef<number | null>(null)
   const highlightedMessageTimerRef = React.useRef<number | null>(null)
@@ -1754,7 +1761,16 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     count: virtualRowCount,
     getScrollElement: () => listRef.current,
     estimateSize: () => VIRTUAL_ROW_ESTIMATED_HEIGHT,
+    initialOffset: () => virtualRowCount * VIRTUAL_ROW_ESTIMATED_HEIGHT,
     overscan: VIRTUAL_ROW_OVERSCAN,
+    rangeExtractor: (range) => {
+      if (pendingInitialScrollSessionIdRef.current !== activeSessionId || range.count === 0) {
+        return defaultRangeExtractor(range)
+      }
+
+      const startIndex = Math.max(0, range.count - INITIAL_TAIL_RENDER_COUNT)
+      return Array.from({ length: range.count - startIndex }, (_, offset) => startIndex + offset)
+    },
     getItemKey: (index) => {
       if (hasLoadOlderRow && index === 0) return `load-older:${activeSessionId ?? 'none'}`
       const row = rows[index - (hasLoadOlderRow ? 1 : 0)]
@@ -1786,7 +1802,12 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
       const ref = listRef.current
       if (!ref || rows.length === 0) return
       markProgrammaticScroll()
-      ref.scrollTo({ top: ref.scrollHeight, behavior })
+      const bottomOffset = Math.max(0, ref.scrollHeight - ref.clientHeight)
+      if (behavior === 'auto') {
+        ref.scrollTop = bottomOffset
+        return
+      }
+      ref.scrollTo({ top: bottomOffset, behavior })
     },
     [markProgrammaticScroll, rows.length]
   )
@@ -2144,14 +2165,26 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     // Enter a follow mode on open so the bottom anchor below keeps re-pinning
     // while virtualized rows are measured; released on the first upward scroll.
     autoScrollModeRef.current = isSessionOutputting ? 'stream' : 'user'
-    requestScrollToBottom({ force: true, maxFrames: INITIAL_SCROLL_SETTLE_FRAMES })
 
-    pendingInitialScrollSessionIdRef.current = null
+    // Position the estimated virtual list before the first paint. Later layout
+    // passes and the resize observer below correct asynchronously measured content.
+    scrollToBottomImmediate()
+
+    if (initialTailReleaseFrameRef.current !== null) {
+      window.cancelAnimationFrame(initialTailReleaseFrameRef.current)
+    }
+    const initializedSessionId = activeSessionId
+    initialTailReleaseFrameRef.current = window.requestAnimationFrame(() => {
+      if (pendingInitialScrollSessionIdRef.current === initializedSessionId) {
+        pendingInitialScrollSessionIdRef.current = null
+      }
+      initialTailReleaseFrameRef.current = null
+    })
   }, [
     activeSessionId,
     isSessionOutputting,
     messages.length,
-    requestScrollToBottom,
+    scrollToBottomImmediate,
     streamingMessageId
   ])
 
@@ -2165,28 +2198,49 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     wasSessionOutputtingRef.current = isSessionOutputting
   }, [isAtBottom, isSessionOutputting, pendingAskUserQuestion])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     if (pendingAskUserQuestion) return
     if (!canAutoScroll()) return
-    requestScrollToBottom({ maxFrames: FOLLOW_BOTTOM_SETTLE_FRAMES })
-  }, [canAutoScroll, pendingAskUserQuestion, requestScrollToBottom, rows.length])
+    scrollToBottomImmediate()
+  }, [canAutoScroll, pendingAskUserQuestion, rows.length, scrollToBottomImmediate])
 
   // Bottom anchor: rows are virtualized with estimated heights, so a single
   // scroll-to-bottom lands short once the real (larger) row heights are
   // measured and the total size grows. Re-pin whenever the measured total size
   // changes while we are following the bottom, until measurement converges.
   const virtualListTotalSize = rowVirtualizer.getTotalSize()
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     if (pendingAskUserQuestion) return
     if (!canAutoScroll() && !isAtBottom) return
-    requestScrollToBottom({ force: true, maxFrames: FOLLOW_BOTTOM_SETTLE_FRAMES })
+    scrollToBottomImmediate()
   }, [
     canAutoScroll,
     isAtBottom,
     pendingAskUserQuestion,
-    requestScrollToBottom,
+    scrollToBottomImmediate,
     virtualListTotalSize
   ])
+
+  React.useEffect(() => {
+    const viewport = listRef.current
+    const content = virtualContentRef.current
+    if (!activeSessionId || !viewport || !content || typeof ResizeObserver === 'undefined') return
+
+    const observer = new ResizeObserver(() => {
+      // Composer hydration and async message rendering can change the viewport
+      // or content after the initial virtual-list measurements have settled.
+      // Keep following only until the user deliberately scrolls upward.
+      if (!canAutoScroll()) return
+      scrollToBottomImmediate()
+    })
+
+    observer.observe(viewport)
+    observer.observe(content)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [activeSessionId, canAutoScroll, scrollToBottomImmediate])
 
   React.useEffect(() => {
     if (!activeSessionId || isAwaitingInitialMessages || isLoadingOlderMessages) return
@@ -2212,6 +2266,9 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
 
   React.useEffect(() => {
     return () => {
+      if (initialTailReleaseFrameRef.current !== null) {
+        window.cancelAnimationFrame(initialTailReleaseFrameRef.current)
+      }
       if (scheduledScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(scheduledScrollFrameRef.current)
       }
@@ -2381,7 +2438,11 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
         style={{ overflowAnchor: 'none' }}
         onScroll={handleListScroll}
       >
-        <div className="relative w-full" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
+        <div
+          ref={virtualContentRef}
+          className="relative w-full"
+          style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+        >
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const isLoadOlderRow = hasLoadOlderRow && virtualRow.index === 0
             const rowIndex = virtualRow.index - (hasLoadOlderRow ? 1 : 0)

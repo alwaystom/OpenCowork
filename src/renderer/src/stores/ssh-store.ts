@@ -516,7 +516,7 @@ interface SshStore {
   openTabs: SshTab[]
   activeTabId: string | null
 
-  // Files opened inside a terminal session (rendered as a split to the right of the terminal)
+  // Content tabs inside a terminal session; a null active file means the terminal tab is active.
   sessionFiles: Record<string, SshSessionFile[]>
   activeSessionFile: Record<string, string | null>
 

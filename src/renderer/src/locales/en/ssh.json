@@ -251,6 +251,8 @@
     "emptyGroupsDesc": "Only groups you create appear here. Create one to organize your hosts.",
     "showLogs": "Show logs",
     "notifications": "Notifications",
+    "monitor": "Monitor",
+    "sessionTabs": "Session tabs",
     "currentSession": "Terminal session",
     "personalVault": "Host profile",
     "newHostHint": "Create a new SSH host profile.",

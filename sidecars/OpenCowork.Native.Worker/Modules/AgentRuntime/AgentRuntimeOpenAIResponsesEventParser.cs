@@ -538,12 +538,14 @@ internal static partial class AgentRuntimeOpenAIResponsesProvider
         out JsonElement usage)
     {
         if (finalResponse.ValueKind == JsonValueKind.Object &&
-            finalResponse.TryGetProperty("usage", out usage))
+            finalResponse.TryGetProperty("usage", out usage) &&
+            usage.ValueKind == JsonValueKind.Object)
         {
             return true;
         }
         if (root.ValueKind == JsonValueKind.Object &&
-            root.TryGetProperty("usage", out usage))
+            root.TryGetProperty("usage", out usage) &&
+            usage.ValueKind == JsonValueKind.Object)
         {
             return true;
         }

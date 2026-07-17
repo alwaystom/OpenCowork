@@ -1,4 +1,4 @@
-import { decode, encode } from '@msgpack/msgpack'
+﻿import { decode, encode } from '@msgpack/msgpack'
 
 export const SIDECAR_APPROVAL_REQUEST_MSGPACK_CHANNEL = 'sidecar:approval-request:msgpack'
 export const SIDECAR_APPROVAL_RESPONSE_MSGPACK_CHANNEL = 'sidecar:approval-response:msgpack'
@@ -38,6 +38,7 @@ export const DB_SESSIONS_CREATE_MSGPACK_CHANNEL = 'db:sessions:create:msgpack'
 export const DB_SESSIONS_UPDATE_MSGPACK_CHANNEL = 'db:sessions:update:msgpack'
 export const DB_SESSIONS_DELETE_MSGPACK_CHANNEL = 'db:sessions:delete:msgpack'
 export const DB_SESSIONS_CLEAR_ALL_MSGPACK_CHANNEL = 'db:sessions:clear-all:msgpack'
+export const DB_SESSIONS_CLEAR_PROJECT_MSGPACK_CHANNEL = 'db:sessions:clear-project:msgpack'
 
 export const DB_GOALS_LIST_MSGPACK_CHANNEL = 'db:goals:list:msgpack'
 export const DB_GOALS_GET_MSGPACK_CHANNEL = 'db:goals:get:msgpack'
